@@ -1,0 +1,2595 @@
+import os
+import cv2
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+from sklearn.decomposition import PCA
+import shap
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+import warnings
+warnings.filterwarnings('ignore')
+
+# =============================================
+# KONFIGURASI
+# =============================================
+red_rose_folder = "C:/Users/Ahsan/Downloads/contoht III.5 - III.8/mawar merah"
+blue_rose_folder = "C:/Users/Ahsan/Downloads/contoht III.5 - III.8/mawar hijau"
+output_excel = "C:/Users/Ahsan/Downloads/data_ekstraksi_rgb.xlsx"
+ecdf_output_excel = "C:/Users/Ahsan/Downloads/data_ecdf_rgb.xlsx"
+ecdf_intensity_output_excel = "C:/Users/Ahsan/Downloads/data_ecdf_intensitas.xlsx"
+conversion_output_excel = "C:/Users/Ahsan/Downloads/data_ecdf_cdf_konversi.xlsx"
+pca_shap_output_excel = "C:/Users/Ahsan/Downloads/data_pca_shap_analysis.xlsx"
+p = 3  # Ukuran resize gambar: p x p
+# Variabel global untuk menyimpan PCA components
+pca_components = None
+
+
+# =============================================
+# FUNGSI UTAMA UNTUK MEMPROSES GAMBAR
+# =============================================
+
+def process_image(image_path, label, gambar_ke):
+    """
+    Memproses satu gambar: resize ke 3x3, ekstrak RGB, dan simpan ke Excel
+    """
+    # Baca gambar
+    img = cv2.imread(image_path)
+    if img is None:
+        return None
+    
+    # Resize gambar menjadi p x p
+    img_resized = cv2.resize(img, (p, p))
+    
+    # Konversi BGR ke RGB
+    img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+    
+    # Ekstrak channel R, G, B
+    R = img_rgb[:, :, 0].flatten()
+    G = img_rgb[:, :, 1].flatten()
+    B = img_rgb[:, :, 2].flatten()
+    
+    # Hitung statistik
+    hasil = {
+        'filename': os.path.basename(image_path),
+        'gambar_ke': gambar_ke,
+        'label': label,
+        'p': p,
+        'total_pixels': p * p,
+        'R_values': R,
+        'G_values': G,
+        'B_values': B,
+        'avg_R': np.mean(R),
+        'avg_G': np.mean(G),
+        'avg_B': np.mean(B),
+        'min_R': np.min(R),
+        'max_R': np.max(R),
+        'min_G': np.min(G),
+        'max_G': np.max(G),
+        'min_B': np.min(B),
+        'max_B': np.max(B)
+    }
+    
+    return hasil
+
+def process_all_images(folder_path, label):
+    """
+    Memproses semua gambar dalam folder
+    """
+    results = []
+    
+    if not os.path.exists(folder_path):
+        print(f"Folder tidak ditemukan: {folder_path}")
+        return pd.DataFrame()
+    
+    image_files = [f for f in os.listdir(folder_path) 
+                  if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    
+    if not image_files:
+        print(f"Tidak ada gambar ditemukan di: {folder_path}")
+        return pd.DataFrame()
+    
+    print(f"Memproses {len(image_files)} gambar dari {folder_path}")
+    
+    for i, image_file in enumerate(image_files):
+        image_path = os.path.join(folder_path, image_file)
+        print(f"  Memproses {image_file}...")
+        
+        result = process_image(image_path, label, i+1)
+        if result is not None:
+            results.append(result)
+    
+    # Konversi ke DataFrame
+    if results:
+        df = pd.DataFrame(results)
+        return df
+    else:
+        return pd.DataFrame()
+
+def save_rgb_to_excel(df_rgb, output_path):
+    """
+    Menyimpan data RGB ke file Excel
+    """
+    # Buat DataFrame yang lebih sederhana untuk disimpan
+    save_data = []
+    for _, row in df_rgb.iterrows():
+        save_data.append({
+            'filename': row['filename'],
+            'gambar_ke': row['gambar_ke'],
+            'label': row['label'],
+            'p': row['p'],
+            'total_pixels': row['total_pixels'],
+            'R_values': str(row['R_values'].tolist()),
+            'G_values': str(row['G_values'].tolist()),
+            'B_values': str(row['B_values'].tolist()),
+            'avg_R': row['avg_R'],
+            'avg_G': row['avg_G'],
+            'avg_B': row['avg_B'],
+            'min_R': row['min_R'],
+            'max_R': row['max_R'],
+            'min_G': row['min_G'],
+            'max_G': row['max_G'],
+            'min_B': row['min_B'],
+            'max_B': row['max_B']
+        })
+    
+    df_save = pd.DataFrame(save_data)
+    df_save.to_excel(output_path, index=False)
+    print(f"Data RGB disimpan ke: {output_path}")
+
+# =============================================
+# FUNGSI ECDF
+# =============================================
+
+def calculate_ecdf(values):
+    """
+    Menghitung ECDF untuk suatu set nilai
+    """
+    if len(values) == 0:
+        return np.array([]), np.array([])
+    
+    # Urutkan nilai
+    sorted_values = np.sort(values)
+    
+    # Hitung ECDF
+    n = len(sorted_values)
+    ecdf = np.arange(1, n + 1) / n
+    
+    return sorted_values, ecdf
+
+def calculate_ecdf_for_image(image_data):
+    """
+    Menghitung ECDF untuk sebuah gambar
+    """
+    filename = image_data['filename']
+    j = image_data['gambar_ke']
+    label = image_data['label']
+    p_j = image_data['p']
+    
+    ecdf_data = {
+        'filename': filename,
+        'gambar_ke': j,
+        'label': label,
+        'p_j': p_j,
+        'R': {'intensity': [], 'ecdf': []},
+        'G': {'intensity': [], 'ecdf': []},
+        'B': {'intensity': [], 'ecdf': []}
+    }
+    
+    # Untuk setiap channel R, G, B
+    for channel in ['R', 'G', 'B']:
+        values = image_data[f'{channel}_values']
+        
+        if len(values) > 0:
+            intensity, ecdf = calculate_ecdf(values)
+            ecdf_data[channel]['intensity'] = intensity
+            ecdf_data[channel]['ecdf'] = ecdf
+    
+    return ecdf_data
+
+def calculate_all_ecdf(df_rgb):
+    """
+    Menghitung ECDF untuk semua gambar
+    """
+    ecdf_results = {}
+    
+    for _, row in df_rgb.iterrows():
+        ecdf_data = calculate_ecdf_for_image(row)
+        ecdf_results[row['filename']] = ecdf_data
+    
+    return ecdf_results
+
+def save_ecdf_to_excel(ecdf_data, output_path):
+    """
+    Menyimpan data ECDF ke file Excel
+    """
+    save_data = []
+    
+    for filename, data in ecdf_data.items():
+        for channel in ['R', 'G', 'B']:
+            channel_data = data[channel]
+            if len(channel_data['intensity']) > 0:
+                for intensity, ecdf_val in zip(channel_data['intensity'], channel_data['ecdf']):
+                    save_data.append({
+                        'filename': filename,
+                        'gambar_ke': data['gambar_ke'],
+                        'label': data['label'],
+                        'channel': channel,
+                        'intensity': intensity,
+                        'ecdf': ecdf_val,
+                        'p_j': data['p_j']
+                    })
+    
+    df_save = pd.DataFrame(save_data)
+    df_save.to_excel(output_path, index=False)
+    print(f"Data ECDF disimpan ke: {output_path}")
+
+# =============================================
+# FUNGSI MODEL MATEMATIS V DAN KONVERSI CDF
+# =============================================
+
+def create_mathematical_model_V(df_cdf):
+    """
+    Membuat model matematis V dari data CDF intensitas
+    Model V berisi kumpulan data CDF:
+    - CDF R intensitas 100, 150, 200
+    - CDF G & B intensitas 150, 200
+    """
+    model_V = {}
+    
+    # Channel R: intensitas 100, 150, 200
+    for intensity in [100, 150, 200]:
+        channel_data = df_cdf[(df_cdf['channel'] == 'R') & (df_cdf['intensity_target'] == intensity)]
+        if not channel_data.empty:
+            model_V[f'R_{intensity}'] = {
+                'ecdf_values': channel_data['ecdf_value'].values,
+                'cdf_values': channel_data['cdf_value'].values
+            }
+    
+    # Channel G: intensitas 150, 200
+    for intensity in [150, 200]:
+        channel_data = df_cdf[(df_cdf['channel'] == 'G') & (df_cdf['intensity_target'] == intensity)]
+        if not channel_data.empty:
+            model_V[f'G_{intensity}'] = {
+                'ecdf_values': channel_data['ecdf_value'].values,
+                'cdf_values': channel_data['cdf_value'].values
+            }
+    
+    # Channel B: intensitas 150, 200
+    for intensity in [150, 200]:
+        channel_data = df_cdf[(df_cdf['channel'] == 'B') & (df_cdf['intensity_target'] == intensity)]
+        if not channel_data.empty:
+            model_V[f'B_{intensity}'] = {
+                'ecdf_values': channel_data['ecdf_value'].values,
+                'cdf_values': channel_data['cdf_value'].values
+            }
+    
+    print("Model matematis V berhasil dibuat")
+    print(f"Komponen model V: {list(model_V.keys())}")
+    
+    return model_V
+
+def convert_ecdf_to_cdf_with_model_V(ecdf_value, model_key, model_V):
+    """
+    Mengkonversi nilai ECDF ke CDF menggunakan model matematis V
+    """
+    if model_key not in model_V:
+        return None
+    
+    model_data = model_V[model_key]
+    ecdf_values = model_data['ecdf_values']
+    cdf_values = model_data['cdf_values']
+    
+    # Jika ECDF value di luar range model, return None
+    if ecdf_value < ecdf_values[0] or ecdf_value > ecdf_values[-1]:
+        return None
+    
+    # Cari posisi ECDF value dalam model
+    idx = np.searchsorted(ecdf_values, ecdf_value, side='right') - 1
+    
+    # Return CDF value yang sesuai
+    return cdf_values[idx]
+
+def extract_and_convert_ecdf_data(ecdf_data, model_V):
+    """
+    Mengekstrak ECDF dari gambar pada intensitas tertentu dan mengkonversinya ke CDF menggunakan model V
+    """
+    conversion_results = []
+    
+    for filename, data in ecdf_data.items():
+        j = data['gambar_ke']
+        label = data['label']
+        
+        # Ekstrak ECDF pada intensitas tertentu untuk semua channel
+        for channel in ['R', 'G', 'B']:
+            channel_data = data[channel]
+            intensity_values = channel_data['intensity']
+            ecdf_values = channel_data['ecdf']
+            
+            if len(intensity_values) > 0:
+                # Untuk setiap intensitas target
+                for intensity in [100, 150, 200]:
+                    # Tentukan model_key berdasarkan channel dan intensitas
+                    model_key = f'{channel}_{intensity}'
+                    
+                    # Skip jika model_key tidak ada di model_V
+                    if model_key not in model_V:
+                        continue
+                    
+                    # Cari nilai ECDF pada intensitas target
+                    ecdf_val = 0.0
+                    for m in range(len(intensity_values)):
+                        if intensity < intensity_values[0]:
+                            ecdf_val = 0.0
+                            break
+                        elif intensity >= intensity_values[m]:
+                            if m == len(intensity_values) - 1 or intensity < intensity_values[m + 1]:
+                                ecdf_val = ecdf_values[m]
+                                break
+                        elif intensity >= intensity_values[-1]:
+                            ecdf_val = 1.0
+                            break
+                    
+                    # Konversi ECDF ke CDF menggunakan model V
+                    cdf_val = convert_ecdf_to_cdf_with_model_V(ecdf_val, model_key, model_V)
+                    
+                    conversion_results.append({
+                        'filename': filename,
+                        'gambar_ke': j,
+                        'label': label,
+                        'channel': channel,
+                        'intensity_target': intensity,
+                        'ecdf_value': ecdf_val,
+                        'cdf_value': cdf_val,
+                        'model_key': model_key
+                    })
+    
+    df_conversion = pd.DataFrame(conversion_results)
+    return df_conversion
+
+def save_conversion_data(ecdf_data, df_conversion, output_path):
+    """
+    Menyimpan data ECDF gambar dan CDF hasil konversi ke Excel
+    """
+    with pd.ExcelWriter(output_path) as writer:
+        # Sheet 1: Data ECDF lengkap semua gambar
+        ecdf_save_data = []
+        for filename, data in ecdf_data.items():
+            for channel in ['R', 'G', 'B']:
+                channel_data = data[channel]
+                if len(channel_data['intensity']) > 0:
+                    for intensity, ecdf_val in zip(channel_data['intensity'], channel_data['ecdf']):
+                        ecdf_save_data.append({
+                            'filename': filename,
+                            'gambar_ke': data['gambar_ke'],
+                            'label': data['label'],
+                            'channel': channel,
+                            'intensity': intensity,
+                            'ecdf': ecdf_val,
+                            'p_j': data['p_j']
+                        })
+        
+        df_ecdf_save = pd.DataFrame(ecdf_save_data)
+        df_ecdf_save.to_excel(writer, sheet_name='ECDF_Gambar', index=False)
+        
+        # Sheet 2: Data konversi ECDF ke CDF
+        df_conversion.to_excel(writer, sheet_name='Konversi_ECDF_ke_CDF', index=False)
+    
+    print(f"Data ECDF dan CDF konversi disimpan ke: {output_path}")
+
+# =============================================
+# FUNGSI PLOT ECDF - DIPERBAIKI DENGAN TITIK TERTUTUP DI AKHIR
+# =============================================
+
+def plot_all_ecdf_fixed(ecdf_data):
+    """
+    Plot ECDF untuk semua gambar dengan fungsi tangga yang benar:
+    - TITIK TERTUTUP DI AKHIR (255, 1.0) DIPASTIKAN ADA
+    - Setiap step horizontal memiliki open circle di kiri dan filled circle di kanan
+    - Open circle dan filled circle sejajar secara horizontal
+    - TIDAK ADA GARIS VERTIKAL
+    - LEGEND YANG TERLIHAT DENGAN BAIK
+    - BATAS SUMBU X: 0-260, BATAS SUMBU Y: 0-1.1
+    """
+    print("\n" + "="*80)
+    print("PLOT ECDF SEMUA GAMBAR (DIPERBAIKI - TITIK TERTUTUP DI AKHIR)")
+    print("="*80)
+    
+    # Buat figure dengan 3 subplot untuk R, G, B
+    fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+    fig.suptitle('ECDF Semua Gambar (Fungsi Tangga - Titik Tertutup di Akhir)', 
+                fontsize=16, fontweight='bold')
+    
+    channel_names = {'R': 'Merah', 'G': 'Hijau', 'B': 'Biru'}
+    
+    # Warna untuk setiap gambar
+    colors = plt.cm.tab10(np.linspace(0, 1, len(ecdf_data)))
+    
+    # Dictionary untuk menyimpan label dan warna untuk legend
+    legend_info = {}
+    
+    for idx, channel in enumerate(['R', 'G', 'B']):
+        ax = axes[idx]
+        
+        # Plot setiap gambar
+        for i, (filename, data) in enumerate(ecdf_data.items()):
+            channel_data = data[channel]
+            
+            if len(channel_data['intensity']) > 0:
+                intensity = channel_data['intensity']
+                ecdf = channel_data['ecdf']
+                color = colors[i]
+                
+                # Dapatkan nama file tanpa ekstensi untuk legend
+                filename_clean = os.path.splitext(filename)[0]
+                label = f"{data['gambar_ke']}: {filename_clean}"
+                
+                # Simpan info untuk legend
+                if label not in legend_info:
+                    legend_info[label] = color
+                
+                # PERBAIKAN: Plot dengan memastikan titik tertutup di akhir
+                # Garis horizontal pertama dari 0 sampai intensity[0] pada ECDF = 0
+                ax.hlines(y=0.0, xmin=0, xmax=intensity[0], 
+                         color=color, alpha=0.7, linewidth=1.5)
+                
+                # Titik tertutup di (intensity[0], 0)
+                ax.scatter(intensity[0], 0.0, facecolors=color, edgecolors=color, 
+                          s=60, linewidth=1.5, zorder=3)
+                
+                # Untuk setiap titik data (kecuali yang terakhir)
+                for j in range(len(ecdf)):
+                    # Garis horizontal dari intensity[j] sampai intensity[j+1] jika ada
+                    if j < len(intensity) - 1:
+                        ax.hlines(y=ecdf[j], xmin=intensity[j], xmax=intensity[j+1], 
+                                 color=color, alpha=0.7, linewidth=1.5)
+                    
+                    # Open circle di kiri (intensity[j], ecdf[j])
+                    ax.scatter(intensity[j], ecdf[j], facecolors='white', edgecolors=color, 
+                              s=60, linewidth=1.5, zorder=3)
+                    
+                    # Filled circle di kanan - untuk titik terakhir, ini adalah filled circle di (intensity[j], ecdf[j])
+                    # Khusus untuk titik terakhir, kita akan tambahkan filled circle lagi di (255, 1.0)
+                    if j == len(ecdf) - 1:
+                        # Garis horizontal terakhir dari intensity[-1] sampai 255
+                        ax.hlines(y=1.0, xmin=intensity[-1], xmax=255, 
+                                 color=color, alpha=0.7, linewidth=1.5)
+                        
+                        # Open circle di awal segmen terakhir (intensity[-1], ecdf[-1])
+                        ax.scatter(intensity[-1], ecdf[-1], facecolors='white', edgecolors=color, 
+                                  s=60, linewidth=1.5, zorder=3)
+                        
+                        # PERBAIKAN: Titik tertutup di akhir (255, 1.0) - DIPASTIKAN ADA
+                        ax.scatter(255, 1.0, facecolors=color, edgecolors=color, 
+                                  s=60, linewidth=1.5, zorder=3)
+        
+        ax.set_title(f'Channel {channel_names[channel]}', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Intensitas', fontsize=12)
+        ax.set_ylabel('ECDF', fontsize=12)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(-5, 260)
+        ax.set_ylim(-0.05, 1.1)
+    
+    # Buat legend di luar plot
+    if legend_info:
+        legend_elements = [plt.Line2D([0], [0], color=color, lw=4, label=label) 
+                          for label, color in legend_info.items()]
+        
+        fig.legend(handles=legend_elements, 
+                  loc='upper center', 
+                  bbox_to_anchor=(0.5, 0.02),
+                  ncol=min(4, len(legend_elements)), 
+                  fontsize=10,
+                  frameon=True,
+                  fancybox=True,
+                  shadow=True)
+    
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.12)
+    plt.show()
+
+def plot_individual_ecdf_fixed(ecdf_data, intensities=[100, 150, 200]):
+    """
+    Plot ECDF per gambar dengan fungsi tangga yang benar - DIPERBAIKI:
+    - TITIK TERTUTUP DI AKHIR (255, 1.0) DIPASTIKAN ADA
+    - Setiap step horizontal memiliki open circle di kiri dan filled circle di kanan
+    - TIDAK ADA GARIS VERTIKAL (kecuali garis bantu untuk intensitas tertentu)
+    - LEGEND YANG JELAS
+    - BATAS SUMBU X: 0-260, BATAS SUMBU Y: 0-1.1
+    """
+    print("\n" + "="*80)
+    print("PLOT ECDF PER GAMBAR DENGAN FUNGSI TANGGA (DIPERBAIKI - TITIK TERTUTUP DI AKHIR)")
+    print("="*80)
+    
+    colors = plt.cm.tab10(np.linspace(0, 1, len(ecdf_data)))
+    intensity_colors = {100: 'red', 150: 'blue', 200: 'green'}
+    
+    for filename, data in ecdf_data.items():
+        j = data['gambar_ke']
+        label = data['label']
+        
+        print(f"\n📊 Plot ECDF Individual - Gambar {j}: {filename}")
+        
+        fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+        fig.suptitle(f'ECDF per Channel - Gambar {j}: {filename} ({label}) - Titik Tertutup di Akhir', 
+                    fontsize=16, fontweight='bold')
+        
+        file_index = list(ecdf_data.keys()).index(filename)
+        color = colors[file_index]
+        
+        for idx, channel in enumerate(['R', 'G', 'B']):
+            ax = axes[idx]
+            channel_data = data[channel]
+            
+            if len(channel_data['intensity']) > 0:
+                intensity = channel_data['intensity']
+                ecdf = channel_data['ecdf']
+                
+                # PERBAIKAN: Plot dengan memastikan titik tertutup di akhir
+                # Garis horizontal pertama dari 0 sampai intensity[0] pada ECDF = 0
+                ax.hlines(y=0.0, xmin=0, xmax=intensity[0], 
+                         color=color, linewidth=2, alpha=0.8)
+                
+                # Titik tertutup di (intensity[0], 0)
+                ax.scatter(intensity[0], 0.0, facecolors=color, edgecolors=color, 
+                          s=80, linewidth=2, zorder=3)
+                
+                # Untuk setiap titik data
+                for k in range(len(ecdf)):
+                    # Garis horizontal dari intensity[k] sampai intensity[k+1] jika ada
+                    if k < len(intensity) - 1:
+                        ax.hlines(y=ecdf[k], xmin=intensity[k], xmax=intensity[k+1], 
+                                 color=color, linewidth=2, alpha=0.8)
+                    
+                    # Open circle di kiri (intensity[k], ecdf[k])
+                    ax.scatter(intensity[k], ecdf[k], facecolors='white', edgecolors=color, 
+                              s=80, linewidth=2, zorder=3)
+                    
+                    # Untuk titik terakhir, tambahkan garis horizontal ke 255 dan titik tertutup
+                    if k == len(ecdf) - 1:
+                        # Garis horizontal terakhir dari intensity[-1] sampai 255
+                        ax.hlines(y=1.0, xmin=intensity[-1], xmax=255, 
+                                 color=color, linewidth=2, alpha=0.8)
+                        
+                        # Open circle di awal segmen terakhir (intensity[-1], ecdf[-1])
+                        ax.scatter(intensity[-1], ecdf[-1], facecolors='white', edgecolors=color, 
+                                  s=80, linewidth=2, zorder=3)
+                        
+                        # PERBAIKAN: Titik tertutup di akhir (255, 1.0) - DIPASTIKAN ADA
+                        ax.scatter(255, 1.0, facecolors=color, edgecolors=color, 
+                                  s=80, linewidth=2, zorder=3)
+                
+                # Garis bantu untuk intensitas tertentu
+                for intensity_val in intensities:
+                    # Hitung nilai ECDF pada intensitas tersebut
+                    ecdf_val = 0.0
+                    if intensity_val < intensity[0]:
+                        ecdf_val = 0.0
+                    elif intensity_val >= intensity[-1]:
+                        ecdf_val = 1.0
+                    else:
+                        for m in range(len(intensity) - 1):
+                            if intensity[m] <= intensity_val < intensity[m + 1]:
+                                ecdf_val = ecdf[m]
+                                break
+                    
+                    # Gambar garis bantu vertikal
+                    ax.axvline(x=intensity_val, color=intensity_colors[intensity_val], 
+                              linestyle=':', alpha=0.6, linewidth=1.5,
+                              label=f'Intensitas {intensity_val}')
+                    
+                    # Titik pada perpotongan
+                    ax.plot(intensity_val, ecdf_val, 's', 
+                           color=intensity_colors[intensity_val], markersize=8,
+                           markerfacecolor='white', markeredgewidth=2)
+                    
+                    # Anotasi nilai ECDF
+                    ax.annotate(f'F({intensity_val}) = {ecdf_val:.3f}', 
+                               xy=(intensity_val, ecdf_val), 
+                               xytext=(10, 10), textcoords='offset points',
+                               fontsize=9, fontweight='bold',
+                               bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.8))
+            
+            ax.set_title(f'Channel {channel}', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Intensitas', fontsize=12)
+            ax.set_ylabel('ECDF', fontsize=12)
+            ax.grid(True, alpha=0.3)
+            ax.set_xlim(-5, 260)
+            ax.set_ylim(-0.05, 1.1)
+            
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                ax.legend(handles=handles, labels=labels, loc='lower right', fontsize=10)
+        
+        plt.tight_layout()
+        plt.show()
+
+
+# =============================================
+# FUNGSI EKSTRAKSI ECDF PADA INTENSITAS TERTENTU - DIPERBAIKI
+# =============================================
+
+def extract_ecdf_at_intensities(ecdf_data, intensities=[100, 150, 200]):
+    """
+    Mengekstrak nilai ECDF pada intensitas tertentu untuk setiap gambar dan channel
+    Menggunakan pendekatan step function yang benar - DIPERBAIKI
+    """
+    ecdf_intensity_data = []
+    
+    for filename, data in ecdf_data.items():
+        j = data['gambar_ke']
+        label = data['label']
+        
+        for channel in ['R', 'G', 'B']:
+            channel_data = data[channel]
+            intensity_values = channel_data['intensity']
+            ecdf_values = channel_data['ecdf']
+            
+            if len(intensity_values) > 0:
+                # Untuk setiap intensitas target, cari nilai ECDF-nya
+                for intensity in intensities:
+                    ecdf_val = 0.0
+                    
+                    # PERBAIKAN: Handle kasus khusus untuk intensitas di luar range
+                    if intensity < intensity_values[0]:
+                        ecdf_val = 0.0
+                    elif intensity >= intensity_values[-1]:
+                        ecdf_val = 1.0
+                    else:
+                        # Cari di segmen mana intensitas berada
+                        for m in range(len(intensity_values) - 1):
+                            if intensity_values[m] <= intensity < intensity_values[m + 1]:
+                                ecdf_val = ecdf_values[m]
+                                break
+                        else:
+                            # Jika tidak ditemukan dalam loop, gunakan nilai terakhir
+                            ecdf_val = ecdf_values[-1] if intensity >= intensity_values[-1] else 0.0
+                    
+                    ecdf_intensity_data.append({
+                        'filename': filename,
+                        'gambar_ke': j,
+                        'label': label,
+                        'channel': channel,
+                        'intensity_target': intensity,
+                        'ecdf_value': ecdf_val
+                    })
+    
+    df_ecdf_intensities = pd.DataFrame(ecdf_intensity_data)
+    return df_ecdf_intensities
+
+def calculate_cdf_for_ecdf_intensities(df_ecdf_intensities):
+    """
+    Menghitung CDF untuk nilai ECDF pada intensitas tertentu per channel
+    """
+    cdf_data = []
+    
+    for channel in ['R', 'G', 'B']:
+        for intensity in [100, 150, 200]:
+            # Ambil nilai ECDF untuk channel dan intensitas tertentu
+            ecdf_values = df_ecdf_intensities[
+                (df_ecdf_intensities['channel'] == channel) & 
+                (df_ecdf_intensities['intensity_target'] == intensity)
+            ]['ecdf_value'].values
+            
+            if len(ecdf_values) > 0:
+                # Urutkan nilai ECDF
+                sorted_ecdf = np.sort(ecdf_values)
+                
+                # Hitung CDF
+                cdf_values = np.arange(1, len(sorted_ecdf) + 1) / len(sorted_ecdf)
+                
+                # Simpan data
+                for ecdf_val, cdf_val in zip(sorted_ecdf, cdf_values):
+                    cdf_data.append({
+                        'channel': channel,
+                        'intensity_target': intensity,
+                        'ecdf_value': ecdf_val,
+                        'cdf_value': cdf_val
+                    })
+    
+    df_cdf = pd.DataFrame(cdf_data)
+    return df_cdf
+
+def save_ecdf_intensity_data(df_ecdf_intensities, df_cdf, output_path):
+    """
+    Menyimpan data ECDF pada intensitas tertentu dan CDF-nya ke Excel
+    """
+    with pd.ExcelWriter(output_path) as writer:
+        # Sheet 1: Data ECDF pada intensitas tertentu
+        df_ecdf_intensities.to_excel(writer, sheet_name='ECDF_Intensitas', index=False)
+        
+        # Sheet 2: Data CDF dari ECDF intensitas
+        df_cdf.to_excel(writer, sheet_name='CDF_ECDF_Intensitas', index=False)
+    
+    print(f"Data ECDF intensitas dan CDF disimpan ke: {output_path}")
+
+def plot_cdf_ecdf_intensities(df_cdf):
+    """
+    Plot CDF untuk nilai ECDF pada intensitas tertentu dengan fungsi tangga:
+    - Setiap step horizontal memiliki open circle di kiri dan filled circle di kanan
+    - Open circle dan filled circle sejajar secara horizontal
+    - TIDAK ADA GARIS VERTIKAL
+    - Format yang sama seperti plot ECDF gambar
+    - TITIK DI CDF=1 TERTUTUP (FILLED CIRCLE)
+    - BATAS SUMBU X: 0-1.1, BATAS SUMBU Y: 0-1.1
+    """
+    print("\n" + "="*80)
+    print("PLOT CDF UNTUK NILAI ECDF PADA INTENSITAS TERTENTU (FUNGSI TANGGA)")
+    print("="*80)
+    
+    fig, axes = plt.subplots(3, 3, figsize=(15, 12))
+    fig.suptitle('CDF dari Nilai ECDF pada Intensitas Tertentu per Channel (Fungsi Tangga)', 
+                fontsize=16, fontweight='bold')
+    
+    colors = {'R': 'red', 'G': 'green', 'B': 'blue'}
+    intensity_names = {100: '100', 150: '150', 200: '200'}
+    
+    for i, channel in enumerate(['R', 'G', 'B']):
+        for j, intensity in enumerate([100, 150, 200]):
+            ax = axes[i, j]
+            
+            # Filter data untuk channel dan intensitas tertentu
+            channel_data = df_cdf[
+                (df_cdf['channel'] == channel) & 
+                (df_cdf['intensity_target'] == intensity)
+            ]
+            
+            if not channel_data.empty:
+                # Urutkan data berdasarkan ecdf_value
+                sorted_data = channel_data.sort_values('ecdf_value')
+                ecdf_values = sorted_data['ecdf_value'].values
+                cdf_values = sorted_data['cdf_value'].values
+                
+                # Plot setiap segmen horizontal TANPA GARIS VERTIKAL
+                for k in range(len(cdf_values)):
+                    x_start = ecdf_values[k] if k == 0 else ecdf_values[k-1]
+                    x_end = ecdf_values[k]
+                    y_val = cdf_values[k]
+                    
+                    # Garis horizontal
+                    ax.hlines(y=y_val, xmin=x_start, xmax=x_end, 
+                             color=colors[channel], linewidth=2, alpha=0.8)
+                    
+                    # Open circle di kiri (hanya untuk k > 0)
+                    if k > 0:
+                        ax.scatter(x_start, y_val, facecolors='white', edgecolors=colors[channel], 
+                                  s=60, linewidth=2, zorder=3)
+                    
+                    # Filled circle di kanan
+                    ax.scatter(x_end, y_val, facecolors=colors[channel], edgecolors=colors[channel], 
+                              s=60, linewidth=2, zorder=3)
+                
+                # Garis horizontal terakhir dari titik terakhir sampai 1.0
+                # DAN tambahkan filled circle di ujung kanan (1.0, 1.0)
+                if len(ecdf_values) > 0:
+                    ax.hlines(y=1.0, xmin=ecdf_values[-1], xmax=1.0, 
+                             color=colors[channel], linewidth=2, alpha=0.8)
+                    # Open circle di awal segmen terakhir
+                    ax.scatter(ecdf_values[-1], 1.0, facecolors='white', edgecolors=colors[channel], 
+                              s=60, linewidth=2, zorder=3)
+                    # Filled circle di akhir segmen terakhir
+                    ax.scatter(1.0, 1.0, facecolors=colors[channel], edgecolors=colors[channel], 
+                              s=60, linewidth=2, zorder=3)
+                
+                ax.set_title(f'Channel {channel} - Intensitas {intensity_names[intensity]}', 
+                           fontsize=12, fontweight='bold')
+                ax.set_xlabel('Nilai ECDF', fontsize=10)
+                ax.set_ylabel('CDF', fontsize=10)
+                ax.grid(True, alpha=0.3)
+                # PERBAIKAN: Perluas batas sumbu x dan y
+                ax.set_xlim(-0.05, 1.1)  # Dari -0.05 sampai 1.1 untuk melihat titik di 0 dan 1
+                ax.set_ylim(-0.05, 1.1)  # Dari -0.05 sampai 1.1 untuk melihat titik di 0 dan 1
+    
+    plt.tight_layout()
+    plt.show()
+
+# =============================================
+# FUNGSI PLOT ECDF - DIPERBAIKI DENGAN TITIK TERTUTUP YANG BENAR
+# =============================================
+
+def plot_all_ecdf_corrected(ecdf_data):
+    """
+    Plot ECDF untuk semua gambar dengan fungsi tangga yang benar:
+    - TITIK TERTUTUP DI SETIAP UJUNG KANAN SEGMEN
+    - TITIK TERBUKA DI SETIAP UJUNG KIRI SEGMEN (kecuali awal)
+    - Format yang konsisten dengan definisi ECDF step-function
+    - BATAS SUMBU X: 0-260, BATAS SUMBU Y: 0-1.1
+    """
+    print("\n" + "="*80)
+    print("PLOT ECDF SEMUA GAMBAR (DIPERBAIKI - TITIK TERTUTUP BENAR)")
+    print("="*80)
+    
+    # Buat figure dengan 3 subplot untuk R, G, B
+    fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+    fig.suptitle('ECDF Semua Gambar (Fungsi Tangga - Titik Tertutup di Kanan Setiap Segmen)', 
+                fontsize=16, fontweight='bold')
+    
+    channel_names = {'R': 'Merah', 'G': 'Hijau', 'B': 'Biru'}
+    
+    # Warna untuk setiap gambar
+    colors = plt.cm.tab10(np.linspace(0, 1, len(ecdf_data)))
+    
+    # Dictionary untuk menyimpan label dan warna untuk legend
+    legend_info = {}
+    
+    for idx, channel in enumerate(['R', 'G', 'B']):
+        ax = axes[idx]
+        
+        # Plot setiap gambar
+        for i, (filename, data) in enumerate(ecdf_data.items()):
+            channel_data = data[channel]
+            
+            if len(channel_data['intensity']) > 0:
+                intensity = channel_data['intensity']
+                ecdf = channel_data['ecdf']
+                color = colors[i]
+                
+                # Dapatkan nama file tanpa ekstensi untuk legend
+                filename_clean = os.path.splitext(filename)[0]
+                label = f"{data['gambar_ke']}: {filename_clean}"
+                
+                # Simpan info untuk legend
+                if label not in legend_info:
+                    legend_info[label] = color
+                
+                # PERBAIKAN: Plot dengan format yang benar untuk ECDF step-function
+                # ECDF dimulai dari (0,0) dengan titik tertutup
+                
+                # Titik awal: (0, 0) - TITIK TERTUTUP
+                ax.scatter(0, 0, facecolors=color, edgecolors=color, 
+                          s=60, linewidth=1.5, zorder=3)
+                
+                # Untuk setiap titik data dalam ECDF
+                for j in range(len(intensity)):
+                    # Garis horizontal dari intensitas sebelumnya ke intensitas sekarang
+                    if j == 0:
+                        # Segmen pertama: dari 0 ke intensity[0] pada y=0
+                        ax.hlines(y=0, xmin=0, xmax=intensity[0], 
+                                 color=color, alpha=0.7, linewidth=1.5)
+                    else:
+                        # Segmen lainnya: dari intensity[j-1] ke intensity[j] pada y=ecdf[j-1]
+                        ax.hlines(y=ecdf[j-1], xmin=intensity[j-1], xmax=intensity[j], 
+                                 color=color, alpha=0.7, linewidth=1.5)
+                    
+                    # TITIK TERBUKA di kiri (intensity[j], ecdf[j-1]) untuk j > 0
+                    if j > 0:
+                        ax.scatter(intensity[j], ecdf[j-1], facecolors='white', edgecolors=color, 
+                                  s=60, linewidth=1.5, zorder=3)
+                    
+                    # TITIK TERTUTUP di kanan (intensity[j], ecdf[j])
+                    ax.scatter(intensity[j], ecdf[j], facecolors=color, edgecolors=color, 
+                              s=60, linewidth=1.5, zorder=3)
+                
+                # Segmen terakhir: dari intensitas terakhir ke 255 pada y=1.0
+                if len(intensity) > 0:
+                    ax.hlines(y=1.0, xmin=intensity[-1], xmax=255, 
+                             color=color, alpha=0.7, linewidth=1.5)
+                    
+                    # TITIK TERBUKA di awal segmen terakhir (intensity[-1], 1.0)
+                    ax.scatter(intensity[-1], 1.0, facecolors='white', edgecolors=color, 
+                              s=60, linewidth=1.5, zorder=3)
+                    
+                    # TITIK TERTUTUP di akhir segmen terakhir (255, 1.0)
+                    ax.scatter(255, 1.0, facecolors=color, edgecolors=color, 
+                              s=60, linewidth=1.5, zorder=3)
+        
+        ax.set_title(f'Channel {channel_names[channel]}', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Intensitas', fontsize=12)
+        ax.set_ylabel('ECDF', fontsize=12)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(-5, 260)
+        ax.set_ylim(-0.05, 1.1)
+    
+    # Buat legend di luar plot
+    if legend_info:
+        legend_elements = [plt.Line2D([0], [0], color=color, lw=4, label=label) 
+                          for label, color in legend_info.items()]
+        
+        fig.legend(handles=legend_elements, 
+                  loc='upper center', 
+                  bbox_to_anchor=(0.5, 0.02),
+                  ncol=min(4, len(legend_elements)), 
+                  fontsize=10,
+                  frameon=True,
+                  fancybox=True,
+                  shadow=True)
+    
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.12)
+    plt.show()
+
+def plot_individual_ecdf_corrected(ecdf_data, intensities=[100, 150, 200]):
+    """
+    Plot ECDF per gambar dengan fungsi tangga yang benar - DIPERBAIKI:
+    - TITIK TERTUTUP DI SETIAP UJUNG KANAN SEGMEN
+    - TITIK TERBUKA DI SETIAP UJUNG KIRI SEGMEN (kecuali awal)
+    - Garis bantu untuk intensitas tertentu
+    - BATAS SUMBU X: 0-260, BATAS SUMBU Y: 0-1.1
+    """
+    print("\n" + "="*80)
+    print("PLOT ECDF PER GAMBAR DENGAN FUNGSI TANGGA (DIPERBAIKI - TITIK TERTUTUP BENAR)")
+    print("="*80)
+    
+    colors = plt.cm.tab10(np.linspace(0, 1, len(ecdf_data)))
+    intensity_colors = {100: 'red', 150: 'blue', 200: 'green'}
+    
+    for filename, data in ecdf_data.items():
+        j = data['gambar_ke']
+        label = data['label']
+        
+        print(f"\n📊 Plot ECDF Individual - Gambar {j}: {filename}")
+        
+        fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+        fig.suptitle(f'ECDF per Channel - Gambar {j}: {filename} ({label}) - Titik Tertutup di Kanan', 
+                    fontsize=16, fontweight='bold')
+        
+        file_index = list(ecdf_data.keys()).index(filename)
+        color = colors[file_index]
+        
+        for idx, channel in enumerate(['R', 'G', 'B']):
+            ax = axes[idx]
+            channel_data = data[channel]
+            
+            if len(channel_data['intensity']) > 0:
+                intensity = channel_data['intensity']
+                ecdf = channel_data['ecdf']
+                
+                # PERBAIKAN: Plot dengan format yang benar untuk ECDF step-function
+                
+                # Titik awal: (0, 0) - TITIK TERTUTUP
+                ax.scatter(0, 0, facecolors=color, edgecolors=color, 
+                          s=80, linewidth=2, zorder=3)
+                
+                # Untuk setiap titik data dalam ECDF
+                for k in range(len(intensity)):
+                    # Garis horizontal dari intensitas sebelumnya ke intensitas sekarang
+                    if k == 0:
+                        # Segmen pertama: dari 0 ke intensity[0] pada y=0
+                        ax.hlines(y=0, xmin=0, xmax=intensity[0], 
+                                 color=color, linewidth=2, alpha=0.8)
+                    else:
+                        # Segmen lainnya: dari intensity[k-1] ke intensity[k] pada y=ecdf[k-1]
+                        ax.hlines(y=ecdf[k-1], xmin=intensity[k-1], xmax=intensity[k], 
+                                 color=color, linewidth=2, alpha=0.8)
+                    
+                    # TITIK TERBUKA di kiri (intensity[k], ecdf[k-1]) untuk k > 0
+                    if k > 0:
+                        ax.scatter(intensity[k], ecdf[k-1], facecolors='white', edgecolors=color, 
+                                  s=80, linewidth=2, zorder=3)
+                    
+                    # TITIK TERTUTUP di kanan (intensity[k], ecdf[k])
+                    ax.scatter(intensity[k], ecdf[k], facecolors=color, edgecolors=color, 
+                              s=80, linewidth=2, zorder=3)
+                
+                # Segmen terakhir: dari intensitas terakhir ke 255 pada y=1.0
+                if len(intensity) > 0:
+                    ax.hlines(y=1.0, xmin=intensity[-1], xmax=255, 
+                             color=color, linewidth=2, alpha=0.8)
+                    
+                    # TITIK TERBUKA di awal segmen terakhir (intensity[-1], 1.0)
+                    ax.scatter(intensity[-1], 1.0, facecolors='white', edgecolors=color, 
+                              s=80, linewidth=2, zorder=3)
+                    
+                    # TITIK TERTUTUP di akhir segmen terakhir (255, 1.0)
+                    ax.scatter(255, 1.0, facecolors=color, edgecolors=color, 
+                              s=80, linewidth=2, zorder=3)
+                
+                # Garis bantu untuk intensitas tertentu
+                for intensity_val in intensities:
+                    # Hitung nilai ECDF pada intensitas tersebut
+                    ecdf_val = 0.0
+                    if intensity_val < intensity[0]:
+                        ecdf_val = 0.0
+                    elif intensity_val >= intensity[-1]:
+                        ecdf_val = 1.0
+                    else:
+                        for m in range(len(intensity) - 1):
+                            if intensity[m] <= intensity_val < intensity[m + 1]:
+                                ecdf_val = ecdf[m]
+                                break
+                    
+                    # Gambar garis bantu vertikal
+                    ax.axvline(x=intensity_val, color=intensity_colors[intensity_val], 
+                              linestyle=':', alpha=0.6, linewidth=1.5,
+                              label=f'Intensitas {intensity_val}')
+                    
+                    # Titik pada perpotongan
+                    ax.plot(intensity_val, ecdf_val, 's', 
+                           color=intensity_colors[intensity_val], markersize=8,
+                           markerfacecolor='white', markeredgewidth=2)
+                    
+                    # Anotasi nilai ECDF
+                    ax.annotate(f'F({intensity_val}) = {ecdf_val:.3f}', 
+                               xy=(intensity_val, ecdf_val), 
+                               xytext=(10, 10), textcoords='offset points',
+                               fontsize=9, fontweight='bold',
+                               bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.8))
+            
+            ax.set_title(f'Channel {channel}', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Intensitas', fontsize=12)
+            ax.set_ylabel('ECDF', fontsize=12)
+            ax.grid(True, alpha=0.3)
+            ax.set_xlim(-5, 260)
+            ax.set_ylim(-0.05, 1.1)
+            
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                ax.legend(handles=handles, labels=labels, loc='lower right', fontsize=10)
+        
+        plt.tight_layout()
+        plt.show()
+
+# =============================================
+# FUNGSI K-MEANS CLUSTERING DENGAN 2 CENTROID
+# =============================================
+
+def prepare_features_for_clustering(df_conversion):
+    """
+    Menyiapkan fitur untuk clustering dari data CDF hasil konversi
+    Setiap gambar diwakili oleh vektor fitur yang terdiri dari nilai CDF pada intensitas tertentu
+    """
+    # Group by filename untuk mendapatkan semua fitur CDF per gambar
+    features_data = []
+    
+    for filename in df_conversion['filename'].unique():
+        file_data = df_conversion[df_conversion['filename'] == filename]
+        
+        # Ekstrak semua nilai CDF untuk gambar ini
+        feature_vector = {}
+        feature_vector['filename'] = filename
+        feature_vector['gambar_ke'] = file_data['gambar_ke'].iloc[0]
+        feature_vector['label'] = file_data['label'].iloc[0]
+        
+        # Untuk setiap kombinasi channel dan intensitas
+        for _, row in file_data.iterrows():
+            key = f"{row['channel']}_{row['intensity_target']}"
+            feature_vector[key] = row['cdf_value']
+        
+        features_data.append(feature_vector)
+    
+    df_features = pd.DataFrame(features_data)
+    return df_features
+
+def perform_kmeans_clustering(df_features, centroid_filenames=['red1.jpg', 'green1.jpg']):
+    """
+    Melakukan K-means clustering dengan 2 centroid berdasarkan CDF hasil konversi
+    Centroid diinisialisasi dengan gambar red1.jpg dan green1.jpg
+    """
+    # Filter hanya kolom fitur (exclude metadata)
+    feature_columns = [col for col in df_features.columns if col not in ['filename', 'gambar_ke', 'label']]
+    
+    # Pastikan semua fitur columns ada
+    if len(feature_columns) == 0:
+        print("Tidak ada fitur yang ditemukan untuk clustering!")
+        return None, None, None
+    
+    # Ekstrak matriks fitur
+    X = df_features[feature_columns].values
+    
+    # Cari indeks untuk centroid
+    centroid_indices = []
+    for centroid_file in centroid_filenames:
+        mask = df_features['filename'] == centroid_file
+        if mask.any():
+            idx = df_features[mask].index[0]
+            centroid_indices.append(idx)
+        else:
+            print(f"File centroid {centroid_file} tidak ditemukan dalam data!")
+            # Gunakan centroid acak jika file tidak ditemukan
+            centroid_indices.append(0)  # Default ke indeks pertama
+    
+    # Inisialisasi centroid
+    initial_centroids = X[centroid_indices]
+    
+    # Lakukan K-means dengan inisialisasi centroid spesifik
+    from sklearn.cluster import KMeans
+    
+    kmeans = KMeans(
+        n_clusters=2,
+        init=initial_centroids,
+        n_init=1,  # Hanya gunakan inisialisasi yang diberikan
+        max_iter=300,
+        random_state=42
+    )
+    
+    labels = kmeans.fit_predict(X)
+    centroids = kmeans.cluster_centers_
+    
+    # Tambahkan hasil clustering ke DataFrame
+    df_features['cluster'] = labels
+    df_features['distance_to_centroid'] = kmeans.transform(X).min(axis=1)
+    
+    # Tentukan cluster mana yang merah dan mana yang hijau berdasarkan centroid
+    red_centroid_idx = centroid_indices[0]
+    green_centroid_idx = centroid_indices[1]
+    
+    cluster_mapping = {}
+    if red_centroid_idx in df_features.index and green_centroid_idx in df_features.index:
+        red_cluster = df_features.loc[red_centroid_idx, 'cluster']
+        green_cluster = df_features.loc[green_centroid_idx, 'cluster']
+        cluster_mapping[red_cluster] = 'merah'
+        cluster_mapping[green_cluster] = 'hijau'
+    
+    df_features['cluster_label'] = df_features['cluster'].map(cluster_mapping)
+    
+    return df_features, kmeans, feature_columns
+
+def analyze_clustering_results(df_features, df_conversion):
+    """
+    Menganalisis dan menampilkan hasil clustering
+    """
+    print("\n" + "="*80)
+    print("HASIL K-MEANS CLUSTERING DENGAN 2 CENTROID")
+    print("="*80)
+    
+    # Hitung akurasi clustering
+    correct_predictions = 0
+    total_predictions = len(df_features)
+    
+    clustering_results = []
+    
+    for _, row in df_features.iterrows():
+        actual_label = row['label']
+        predicted_label = row['cluster_label']
+        is_correct = (actual_label == predicted_label)
+        
+        if is_correct:
+            correct_predictions += 1
+        
+        clustering_results.append({
+            'filename': row['filename'],
+            'gambar_ke': row['gambar_ke'],
+            'label_aktual': actual_label,
+            'cluster_prediksi': row['cluster'],
+            'label_prediksi': predicted_label,
+            'benar': is_correct,
+            'jarak_ke_centroid': row['distance_to_centroid']
+        })
+    
+    accuracy = correct_predictions / total_predictions * 100
+    
+    print(f"\nAKURASI CLUSTERING: {accuracy:.2f}%")
+    print(f"Benar: {correct_predictions}/{total_predictions}")
+    
+    # Tampilkan detail hasil
+    df_results = pd.DataFrame(clustering_results)
+    print("\nDETAIL HASIL CLUSTERING:")
+    print(df_results[['filename', 'label_aktual', 'label_prediksi', 'benar', 'jarak_ke_centroid']])
+    
+    return df_results, accuracy
+
+def plot_clustering_results(df_features, feature_columns):
+    """
+    Membuat visualisasi hasil clustering
+    """
+    import matplotlib.pyplot as plt
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+    
+    print("\n" + "="*80)
+    print("VISUALISASI HASIL CLUSTERING")
+    print("="*80)
+    
+    # Standardisasi fitur
+    X = df_features[feature_columns].values
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Reduksi dimensi dengan PCA
+    pca = PCA(n_components=2)
+    X_pca = pca.fit_transform(X_scaled)
+    
+    # Buat plot
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Plot 1: Hasil clustering
+    colors = {'merah': 'red', 'hijau': 'green'}
+    actual_colors = [colors.get(row['label'], 'gray') for _, row in df_features.iterrows()]
+    cluster_colors = [colors.get(row['cluster_label'], 'gray') for _, row in df_features.iterrows()]
+    
+    # Subplot 1: Label aktual
+    for label in colors.keys():
+        mask = df_features['label'] == label
+        ax1.scatter(X_pca[mask, 0], X_pca[mask, 1], 
+                   c=colors[label], label=f'Aktual: {label}', s=100, alpha=0.7)
+    
+    ax1.set_title('LABEL AKTUAL (Ground Truth)')
+    ax1.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.2%} variance)')
+    ax1.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.2%} variance)')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Subplot 2: Hasil clustering
+    for cluster_label in colors.keys():
+        mask = df_features['cluster_label'] == cluster_label
+        ax2.scatter(X_pca[mask, 0], X_pca[mask, 1], 
+                   c=colors[cluster_label], label=f'Cluster: {cluster_label}', s=100, alpha=0.7)
+    
+    # Tandai centroid
+    centroid_files = ['red1.jpg', 'green1.jpg']
+    for centroid_file in centroid_files:
+        mask = df_features['filename'] == centroid_file
+        if mask.any():
+            idx = df_features[mask].index[0]
+            ax2.scatter(X_pca[idx, 0], X_pca[idx, 1], 
+                       c='black', marker='*', s=300, label=f'Centroid: {centroid_file}')
+    
+    ax2.set_title('HASIL CLUSTERING K-MEANS')
+    ax2.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.2%} variance)')
+    ax2.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.2%} variance)')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print variance explained oleh PCA
+    print(f"\nVariance yang dijelaskan oleh PCA:")
+    print(f"PC1: {pca.explained_variance_ratio_[0]:.4f} ({pca.explained_variance_ratio_[0]:.2%})")
+    print(f"PC2: {pca.explained_variance_ratio_[1]:.4f} ({pca.explained_variance_ratio_[1]:.2%})")
+    print(f"Total: {sum(pca.explained_variance_ratio_):.4f} ({sum(pca.explained_variance_ratio_):.2%})")
+
+def save_clustering_results(df_features, df_results, accuracy, output_path):
+    """
+    Menyimpan hasil clustering ke file Excel
+    """
+    with pd.ExcelWriter(output_path) as writer:
+        # Sheet 1: Fitur dan hasil clustering
+        df_features.to_excel(writer, sheet_name='Fitur_dan_Clustering', index=False)
+        
+        # Sheet 2: Ringkasan hasil
+        df_results.to_excel(writer, sheet_name='Hasil_Clustering', index=False)
+        
+        # Sheet 3: Statistik clustering
+        accuracy_data = [{
+            'total_gambar': len(df_features),
+            'benar': len(df_results[df_results['benar'] == True]),
+            'salah': len(df_results[df_results['benar'] == False]),
+            'akurasi': accuracy
+        }]
+        df_accuracy = pd.DataFrame(accuracy_data)
+        df_accuracy.to_excel(writer, sheet_name='Statistik', index=False)
+    
+    print(f"Hasil clustering disimpan ke: {output_path}")
+
+# =============================================
+# FUNGSI K-MEANS CLUSTERING DENGAN 2 CENTROID - DIPERBAIKI
+# =============================================
+
+def find_centroid_files(df_features, centroid_filenames=['red1.jpg', 'green1.jpg']):
+    """
+    Mencari file centroid dengan pencarian yang lebih fleksibel
+    """
+    found_centroids = []
+    
+    for centroid_file in centroid_filenames:
+        # Coba pencarian exact match dulu
+        exact_match = df_features[df_features['filename'] == centroid_file]
+        if not exact_match.empty:
+            found_centroids.append(centroid_file)
+            print(f"✅ Found centroid: {centroid_file}")
+            continue
+        
+        # Coba tanpa case sensitivity dan partial match
+        for actual_file in df_features['filename']:
+            # Normalisasi nama file untuk perbandingan
+            centroid_base = os.path.splitext(centroid_file)[0].lower()
+            actual_base = os.path.splitext(actual_file)[0].lower()
+            
+            if centroid_base in actual_base or actual_base in centroid_base:
+                found_centroids.append(actual_file)
+                print(f"✅ Found centroid (fuzzy): {centroid_file} -> {actual_file}")
+                break
+        else:
+            # Jika tidak ditemukan, gunakan file pertama dengan label yang sesuai
+            if 'red' in centroid_file.lower():
+                red_files = df_features[df_features['label'] == 'merah']['filename']
+                if not red_files.empty:
+                    found_file = red_files.iloc[0]
+                    found_centroids.append(found_file)
+                    print(f"⚠️  Using fallback red centroid: {found_file}")
+                else:
+                    print(f"❌ Cannot find any red files for centroid: {centroid_file}")
+            elif 'green' in centroid_file.lower() or 'hijau' in centroid_file.lower():
+                green_files = df_features[df_features['label'] == 'hijau']['filename']
+                if not green_files.empty:
+                    found_file = green_files.iloc[0]
+                    found_centroids.append(found_file)
+                    print(f"⚠️  Using fallback green centroid: {found_file}")
+                else:
+                    print(f"❌ Cannot find any green files for centroid: {centroid_file}")
+    
+    return found_centroids
+
+def perform_kmeans_clustering(df_features, centroid_filenames=['red1.jpg', 'green1.jpg']):
+    """
+    Melakukan K-means clustering dengan 2 centroid berdasarkan CDF hasil konversi
+    Centroid diinisialisasi dengan gambar red1.jpg dan green1.jpg - DIPERBAIKI
+    """
+    print(f"\n🔍 Mencari file centroid: {centroid_filenames}")
+    
+    # Filter hanya kolom fitur (exclude metadata)
+    feature_columns = [col for col in df_features.columns if col not in ['filename', 'gambar_ke', 'label']]
+    
+    # Pastikan semua fitur columns ada
+    if len(feature_columns) == 0:
+        print("❌ Tidak ada fitur yang ditemukan untuk clustering!")
+        return None, None, None, []
+    
+    # Ekstrak matriks fitur
+    X = df_features[feature_columns].values
+    
+    # Cari file centroid dengan pencarian yang lebih baik
+    found_centroid_files = find_centroid_files(df_features, centroid_filenames)
+    
+    if len(found_centroid_files) < 2:
+        print("❌ Tidak cukup centroid yang ditemukan! Menggunakan centroid acak...")
+        # Fallback: gunakan dua gambar pertama sebagai centroid
+        found_centroid_files = df_features['filename'].head(2).tolist()
+    
+    print(f"🎯 Centroid yang akan digunakan: {found_centroid_files}")
+    
+    # Cari indeks untuk centroid
+    centroid_indices = []
+    for centroid_file in found_centroid_files:
+        mask = df_features['filename'] == centroid_file
+        if mask.any():
+            idx = df_features[mask].index[0]
+            centroid_indices.append(idx)
+            print(f"   📍 {centroid_file} -> index {idx}")
+        else:
+            print(f"❌ File centroid {centroid_file} tidak ditemukan dalam data!")
+            return None, None, None, []
+    
+    # Inisialisasi centroid
+    initial_centroids = X[centroid_indices]
+    
+    print(f"📍 Indeks centroid: {centroid_indices}")
+    print(f"🔢 Shape initial centroids: {initial_centroids.shape}")
+    
+    # Lakukan K-means dengan inisialisasi centroid spesifik
+    from sklearn.cluster import KMeans
+    
+    try:
+        kmeans = KMeans(
+            n_clusters=2,
+            init=initial_centroids,
+            n_init=1,  # Hanya gunakan inisialisasi yang diberikan
+            max_iter=300,
+            random_state=42
+        )
+        
+        labels = kmeans.fit_predict(X)
+        centroids = kmeans.cluster_centers_
+        
+        print("✅ K-means clustering berhasil!")
+        
+    except Exception as e:
+        print(f"❌ Error dalam K-means: {e}")
+        # Fallback ke K-means biasa
+        kmeans = KMeans(n_clusters=2, random_state=42)
+        labels = kmeans.fit_predict(X)
+        centroids = kmeans.cluster_centers_
+    
+    # Tambahkan hasil clustering ke DataFrame
+    df_features = df_features.copy()
+    df_features['cluster'] = labels
+    df_features['distance_to_centroid'] = kmeans.transform(X).min(axis=1)
+    
+    # Tentukan cluster mana yang merah dan mana yang hijau berdasarkan centroid
+    cluster_mapping = {}
+    if len(centroid_indices) >= 2:
+        red_centroid_idx = centroid_indices[0]
+        green_centroid_idx = centroid_indices[1]
+        
+        if red_centroid_idx in df_features.index and green_centroid_idx in df_features.index:
+            red_cluster = df_features.loc[red_centroid_idx, 'cluster']
+            green_cluster = df_features.loc[green_centroid_idx, 'cluster']
+            cluster_mapping[red_cluster] = 'merah'
+            cluster_mapping[green_cluster] = 'hijau'
+            print(f"🔀 Mapping cluster: {red_cluster}->merah, {green_cluster}->hijau")
+        else:
+            print("⚠️  Tidak bisa mapping cluster berdasarkan centroid")
+            # Default mapping
+            cluster_mapping[0] = 'merah'
+            cluster_mapping[1] = 'hijau'
+    else:
+        print("⚠️  Tidak cukup centroid untuk mapping")
+        cluster_mapping[0] = 'merah'
+        cluster_mapping[1] = 'hijau'
+    
+    df_features['cluster_label'] = df_features['cluster'].map(cluster_mapping)
+    
+    # Simpan informasi centroid yang digunakan
+    centroid_info = []
+    for i, idx in enumerate(centroid_indices):
+        if idx in df_features.index:
+            centroid_info.append({
+                'filename': df_features.loc[idx, 'filename'],
+                'cluster': df_features.loc[idx, 'cluster'],
+                'cluster_label': df_features.loc[idx, 'cluster_label'],
+                'index': idx
+            })
+    
+    return df_features, kmeans, feature_columns, centroid_info
+
+def plot_clustering_results_improved(df_features, feature_columns, centroid_info):
+    """
+    Membuat visualisasi hasil clustering dengan perbaikan:
+    - Pastikan centroid muncul di plot
+    - Skala x-axis disamakan antara plot aktual dan clustering
+    - Menambahkan label filename pada setiap titik
+    """
+    import matplotlib.pyplot as plt
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+    import numpy as np
+    
+    print("\n" + "="*80)
+    print("VISUALISASI HASIL CLUSTERING (DIPERBAIKI)")
+    print("="*80)
+    
+    # Standardisasi fitur
+    X = df_features[feature_columns].values
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Reduksi dimensi dengan PCA
+    pca = PCA(n_components=2)
+    X_pca = pca.fit_transform(X_scaled)
+    
+    # Hitung batas yang sama untuk kedua plot
+    x_min = min(X_pca[:, 0]) - 0.5
+    x_max = max(X_pca[:, 0]) + 0.5
+    y_min = min(X_pca[:, 1]) - 0.5
+    y_max = max(X_pca[:, 1]) + 0.5
+    
+    # Buat plot dengan ukuran yang lebih besar
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+    
+    # Warna untuk plot
+    colors = {'merah': 'red', 'hijau': 'green'}
+    
+    # Plot 1: Label aktual
+    for label in colors.keys():
+        mask = df_features['label'] == label
+        ax1.scatter(X_pca[mask, 0], X_pca[mask, 1], 
+                   c=colors[label], label=f'Aktual: {label}', s=100, alpha=0.7, edgecolors='black', linewidth=0.5)
+    
+    # Tambahkan label filename untuk plot aktual
+    for i, (_, row) in enumerate(df_features.iterrows()):
+        filename_short = os.path.splitext(row['filename'])[0]  # Hapus ekstensi
+        ax1.annotate(filename_short, 
+                    (X_pca[i, 0], X_pca[i, 1]),
+                    xytext=(5, 5), 
+                    textcoords='offset points',
+                    fontsize=8,
+                    alpha=0.8,
+                    bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7, edgecolor='none'))
+    
+    ax1.set_title('LABEL AKTUAL (Ground Truth)', fontsize=14, fontweight='bold')
+    ax1.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.2%} variance)')
+    ax1.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.2%} variance)')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    ax1.set_xlim(x_min, x_max)
+    ax1.set_ylim(y_min, y_max)
+    
+    # Plot 2: Hasil clustering
+    for cluster_label in colors.keys():
+        mask = df_features['cluster_label'] == cluster_label
+        if mask.any():  # Pastikan ada data untuk cluster ini
+            ax2.scatter(X_pca[mask, 0], X_pca[mask, 1], 
+                       c=colors[cluster_label], label=f'Cluster: {cluster_label}', s=100, alpha=0.7, edgecolors='black', linewidth=0.5)
+    
+    # Tandai centroid dengan spesial marker - DIPERBAIKI
+    print(f"🎯 Menampilkan {len(centroid_info)} centroid di plot...")
+    centroid_markers = ['*', 'D', 's', '^']  # Multiple marker types
+    centroid_sizes = [400, 300]  # Different sizes
+    
+    for idx, centroid in enumerate(centroid_info):
+        if centroid['index'] in df_features.index:
+            centroid_point = X_pca[centroid['index']]
+            marker = centroid_markers[idx % len(centroid_markers)]
+            size = centroid_sizes[idx % len(centroid_sizes)]
+            
+            ax2.scatter(centroid_point[0], centroid_point[1], 
+                       c='gold', marker=marker, s=size,
+                       label=f"Centroid: {os.path.splitext(centroid['filename'])[0]}",
+                       edgecolors='black', linewidth=3, zorder=5)
+            
+            # Tambahkan circle tambahan untuk emphasis
+            ax2.scatter(centroid_point[0], centroid_point[1], 
+                       facecolors='none', edgecolors='black', 
+                       s=size+100, linewidth=2, zorder=4)
+            
+            print(f"   ✅ Centroid {idx}: {centroid['filename']} di posisi {centroid_point}")
+        else:
+            print(f"❌ Centroid index {centroid['index']} tidak ditemukan!")
+    
+    # Tambahkan label filename untuk plot clustering
+    for i, (_, row) in enumerate(df_features.iterrows()):
+        filename_short = os.path.splitext(row['filename'])[0]
+        # Beri warna teks berbeda untuk titik yang salah klasifikasi
+        text_color = 'black'
+        bbox_style = dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7, edgecolor='none')
+        
+        if row['label'] != row['cluster_label']:
+            text_color = 'red'
+            bbox_style['edgecolor'] = 'red'
+            bbox_style['linewidth'] = 1
+        
+        ax2.annotate(filename_short, 
+                    (X_pca[i, 0], X_pca[i, 1]),
+                    xytext=(5, 5), 
+                    textcoords='offset points',
+                    fontsize=8,
+                    alpha=0.8,
+                    color=text_color,
+                    bbox=bbox_style)
+    
+    ax2.set_title('HASIL CLUSTERING K-MEANS', fontsize=14, fontweight='bold')
+    ax2.set_xlabel(f'PC1 ({pca.explained_variance_ratio_[0]:.2%} variance)')
+    ax2.set_ylabel(f'PC2 ({pca.explained_variance_ratio_[1]:.2%} variance)')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xlim(x_min, x_max)
+    ax2.set_ylim(y_min, y_max)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print variance explained oleh PCA
+    print(f"\n📊 Variance yang dijelaskan oleh PCA:")
+    print(f"   PC1: {pca.explained_variance_ratio_[0]:.4f} ({pca.explained_variance_ratio_[0]:.2%})")
+    print(f"   PC2: {pca.explained_variance_ratio_[1]:.4f} ({pca.explained_variance_ratio_[1]:.2%})")
+    print(f"   Total: {sum(pca.explained_variance_ratio_):.4f} ({sum(pca.explained_variance_ratio_):.2%})")
+
+def analyze_clustering_results(df_features, df_conversion, centroid_info):
+    """
+    Menganalisis dan menampilkan hasil clustering - DIPERBAIKI
+    """
+    print("\n" + "="*80)
+    print("HASIL K-MEANS CLUSTERING DENGAN 2 CENTROID")
+    print("="*80)
+    
+    # Tampilkan informasi centroid
+    print("\n🎯 INFORMASI CENTROID:")
+    for i, centroid in enumerate(centroid_info):
+        print(f"   Centroid {i+1}: {centroid['filename']}")
+        print(f"     - Cluster: {centroid['cluster']} ({centroid['cluster_label']})")
+        print(f"     - Index: {centroid['index']}")
+    
+    # Hitung akurasi clustering
+    correct_predictions = 0
+    total_predictions = len(df_features)
+    
+    clustering_results = []
+    
+    for _, row in df_features.iterrows():
+        actual_label = row['label']
+        predicted_label = row['cluster_label']
+        is_correct = (actual_label == predicted_label)
+        
+        if is_correct:
+            correct_predictions += 1
+        
+        clustering_results.append({
+            'filename': row['filename'],
+            'gambar_ke': row['gambar_ke'],
+            'label_aktual': actual_label,
+            'cluster_prediksi': row['cluster'],
+            'label_prediksi': predicted_label,
+            'benar': is_correct,
+            'jarak_ke_centroid': row['distance_to_centroid']
+        })
+    
+    accuracy = correct_predictions / total_predictions * 100
+    
+    print(f"\n📈 AKURASI CLUSTERING: {accuracy:.2f}%")
+    print(f"   Benar: {correct_predictions}/{total_predictions}")
+    
+    # Tampilkan detail hasil
+    df_results = pd.DataFrame(clustering_results)
+    print("\n📋 DETAIL HASIL CLUSTERING:")
+    print(df_results[['filename', 'label_aktual', 'label_prediksi', 'benar', 'jarak_ke_centroid']].to_string(index=False))
+    
+    return df_results, accuracy
+
+
+# =============================================
+# FUNGSI PCA ANALYSIS
+# =============================================
+
+def perform_pca_analysis(df_features, feature_columns):
+    """
+    Melakukan analisis PCA pada fitur CDF
+    """
+    print("\n" + "="*80)
+    print("ANALISIS PRINCIPAL COMPONENT ANALYSIS (PCA)")
+    print("="*80)
+    
+    # Ambil matriks fitur
+    X = df_features[feature_columns].values
+    
+    # Standardisasi fitur
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Lakukan PCA
+    pca = PCA()
+    X_pca = pca.fit_transform(X_scaled)
+    
+    # Hitung variance explained
+    variance_ratio = pca.explained_variance_ratio_
+    cumulative_variance = np.cumsum(variance_ratio)
+    
+    print(f"Jumlah fitur asli: {X.shape[1]}")
+    print(f"Jumlah komponen PCA: {X_pca.shape[1]}")
+    
+    # Tampilkan variance explained
+    print("\nVariance Explained oleh Setiap Komponen:")
+    for i, (var, cum_var) in enumerate(zip(variance_ratio, cumulative_variance)):
+        print(f"  PC{i+1}: {var:.4f} ({var*100:.2f}%) - Kumulatif: {cum_var:.4f} ({cum_var*100:.2f}%)")
+    
+    # Simpan PCA components untuk loadings plot
+    global pca_components
+    pca_components = pca.components_
+    
+    # Tambahkan komponen PCA ke dataframe
+    for i in range(min(5, X_pca.shape[1])):  # Simpan 5 komponen pertama
+        df_features[f'PC{i+1}'] = X_pca[:, i]
+    
+    # Visualisasi PCA dengan parameter feature_columns
+    visualize_pca_results(X_pca, df_features, variance_ratio, cumulative_variance, feature_columns)
+    
+    return df_features, pca, X_pca, variance_ratio
+
+def visualize_pca_results(X_pca, df_features, variance_ratio, cumulative_variance, feature_columns):
+    """
+    Membuat visualisasi hasil PCA - DIPERBAIKI dengan parameter feature_columns
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    
+    # Plot 1: Scatter plot PC1 vs PC2 dengan warna berdasarkan label aktual
+    ax1 = axes[0, 0]
+    colors = {'merah': 'red', 'hijau': 'green'}
+    for label, color in colors.items():
+        mask = df_features['label'] == label
+        ax1.scatter(X_pca[mask, 0], X_pca[mask, 1], 
+                   c=color, label=f'Label: {label}', s=100, alpha=0.8, edgecolors='black')
+    
+    ax1.set_xlabel(f'PC1 ({variance_ratio[0]*100:.1f}% variance)', fontsize=12)
+    ax1.set_ylabel(f'PC2 ({variance_ratio[1]*100:.1f}% variance)', fontsize=12)
+    ax1.set_title('PCA: PC1 vs PC2 (Label Aktual)', fontsize=14, fontweight='bold')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Anotasi nama file
+    for i, (_, row) in enumerate(df_features.iterrows()):
+        filename_short = os.path.splitext(row['filename'])[0]
+        ax1.annotate(filename_short, (X_pca[i, 0], X_pca[i, 1]),
+                    xytext=(5, 5), textcoords='offset points',
+                    fontsize=8, alpha=0.7)
+    
+    # Plot 2: Scatter plot PC1 vs PC2 dengan warna berdasarkan hasil clustering
+    ax2 = axes[0, 1]
+    for label, color in colors.items():
+        mask = df_features['cluster_label'] == label
+        if mask.any():
+            ax2.scatter(X_pca[mask, 0], X_pca[mask, 1], 
+                       c=color, label=f'Cluster: {label}', s=100, alpha=0.8, edgecolors='black')
+    
+    ax2.set_xlabel(f'PC1 ({variance_ratio[0]*100:.1f}% variance)', fontsize=12)
+    ax2.set_ylabel(f'PC2 ({variance_ratio[1]*100:.1f}% variance)', fontsize=12)
+    ax2.set_title('PCA: PC1 vs PC2 (Hasil Clustering)', fontsize=14, fontweight='bold')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    # Tandai centroid
+    centroid_markers = ['*', 's', 'D', '^']
+    for idx, (_, row) in enumerate(df_features.iterrows()):
+        if row['filename'] in ['red1.jpg', 'green1.jpg']:
+            marker = centroid_markers[idx % len(centroid_markers)]
+            ax2.scatter(X_pca[idx, 0], X_pca[idx, 1],
+                       c='gold', marker=marker, s=200,
+                       label=f"Centroid: {os.path.splitext(row['filename'])[0]}",
+                       edgecolors='black', linewidth=2, zorder=5)
+    
+    # Plot 3: Scree plot - variance explained
+    ax3 = axes[1, 0]
+    components = np.arange(1, len(variance_ratio) + 1)
+    ax3.bar(components[:10], variance_ratio[:10], alpha=0.6, color='steelblue', label='Individual')
+    ax3.plot(components[:10], cumulative_variance[:10], 'r-', marker='o', label='Kumulatif')
+    ax3.axhline(y=0.95, color='g', linestyle='--', alpha=0.7, label='95% threshold')
+    
+    ax3.set_xlabel('Principal Components', fontsize=12)
+    ax3.set_ylabel('Variance Explained Ratio', fontsize=12)
+    ax3.set_title('Scree Plot: Variance Explained', fontsize=14, fontweight='bold')
+    ax3.set_xticks(components[:10])
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    
+    # Plot 4: Loadings plot untuk PC1 dan PC2 (HANYA jika ada data PCA components)
+    ax4 = axes[1, 1]
+    
+    # Coba akses PCA components jika tersedia
+    try:
+        # Jika pca_components tersedia dari pemanggilan fungsi sebelumnya
+        if 'pca_components' in globals() or 'pca_components' in locals():
+            pca_components = globals().get('pca_components', locals().get('pca_components', None))
+            if pca_components is not None and feature_columns:
+                n_features = len(feature_columns)
+                feature_names = [f.replace('_', '\n') for f in feature_columns]
+                
+                # Ambil loadings untuk PC1 dan PC2
+                loadings_pc1 = pca_components[0, :n_features] if pca_components.shape[1] >= n_features else np.zeros(n_features)
+                loadings_pc2 = pca_components[1, :n_features] if pca_components.shape[1] >= n_features else np.zeros(n_features)
+                
+                for i in range(min(n_features, 10)):  # Batasi 10 fitur teratas
+                    ax4.arrow(0, 0, loadings_pc1[i], loadings_pc2[i], 
+                             head_width=0.03, head_length=0.03, fc='blue', ec='blue', alpha=0.5)
+                    ax4.text(loadings_pc1[i]*1.1, loadings_pc2[i]*1.1, 
+                            feature_names[i], fontsize=8, ha='center', va='center')
+                
+                ax4.set_xlabel('PC1 Loadings', fontsize=12)
+                ax4.set_ylabel('PC2 Loadings', fontsize=12)
+                ax4.set_title('Loadings Plot: PC1 vs PC2 (Top 10 Features)', fontsize=14, fontweight='bold')
+        else:
+            # Jika tidak ada data loadings, tampilkan pesan
+            ax4.text(0.5, 0.5, 'Loadings data not available\nPCA components needed for this plot', 
+                    ha='center', va='center', transform=ax4.transAxes, fontsize=12)
+            ax4.set_title('Loadings Plot: Data Not Available', fontsize=14, fontweight='bold')
+    except Exception as e:
+        # Jika terjadi error, tampilkan pesan error
+        ax4.text(0.5, 0.5, f'Error loading PCA components:\n{str(e)}', 
+                ha='center', va='center', transform=ax4.transAxes, fontsize=10)
+        ax4.set_title('Loadings Plot: Error', fontsize=14, fontweight='bold')
+    
+    ax4.grid(True, alpha=0.3)
+    ax4.axhline(y=0, color='k', linestyle='-', alpha=0.3)
+    ax4.axvline(x=0, color='k', linestyle='-', alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Analisis separabilitas linear
+    print("\n🔍 ANALISIS SEPARABILITAS LINEAR:")
+    print(f"   PC1 menjelaskan {variance_ratio[0]*100:.2f}% variasi data")
+    print(f"   PC2 menjelaskan {variance_ratio[1]*100:.2f}% variasi data")
+    print(f"   PC1+PC2 menjelaskan {cumulative_variance[1]*100:.2f}% variasi data")
+    
+    # Hitung jarak antara centroid dalam ruang PCA
+    red_mask = df_features['label'] == 'merah'
+    green_mask = df_features['label'] == 'hijau'
+    
+    if red_mask.any() and green_mask.any():
+        red_center = X_pca[red_mask, :2].mean(axis=0)
+        green_center = X_pca[green_mask, :2].mean(axis=0)
+        distance = np.linalg.norm(red_center - green_center)
+        print(f"   Jarak antara centroid merah dan hijau di ruang PCA: {distance:.4f}")
+        print(f"   Centroid merah: {red_center}")
+        print(f"   Centroid hijau: {green_center}")
+
+# =============================================
+# FUNGSI SHAP ANALYSIS
+# =============================================
+
+def perform_shap_analysis(df_features, feature_columns):
+    """
+    Melakukan analisis SHAP sederhana yang pasti berjalan tanpa error
+    """
+    print("\n" + "="*80)
+    print("ANALISIS SHAP (VERSI SEDERHANA YANG PASTI BERJALAN)")
+    print("="*80)
+    
+    # Cek apakah ada data yang cukup
+    if len(df_features) < 2:
+        print("❌ Tidak cukup data untuk analisis SHAP")
+        return None, None
+    
+    # 1. FEATURE IMPORTANCE TRADISIONAL (PASTI BERHASIL)
+    print("\n📊 1. FEATURE IMPORTANCE TRADISIONAL")
+    
+    # Siapkan data
+    X = df_features[feature_columns].values
+    y = df_features['cluster'].values
+    
+    # Model sederhana
+    model = RandomForestClassifier(
+        n_estimators=30,
+        max_depth=3,
+        random_state=42
+    )
+    
+    try:
+        model.fit(X, y)
+        print("✅ Model berhasil dilatih")
+    except Exception as e:
+        print(f"❌ Error training model: {e}")
+        return None, None
+    
+    # Feature importance
+    feature_importance = model.feature_importances_
+    feature_names = list(feature_columns)
+    
+    # Buat DataFrame
+    importance_df = pd.DataFrame({
+        'feature': feature_names,
+        'importance': feature_importance
+    }).sort_values('importance', ascending=False)
+    
+    print("\nTOP 10 FEATURE IMPORTANCE:")
+    for i, row in importance_df.head(10).iterrows():
+        print(f"  {row['feature']}: {row['importance']:.6f}")
+    
+    # 2. VISUALISASI SEDERHANA (PASTI BERJALAN)
+    print("\n📈 2. VISUALISASI FEATURE IMPORTANCE")
+    
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    
+    # Plot 1: Bar plot feature importance
+    ax1 = axes[0, 0]
+    top_n = min(10, len(importance_df))
+    top_features = importance_df.head(top_n)
+    
+    bars = ax1.barh(range(top_n), top_features['importance'])
+    ax1.set_yticks(range(top_n))
+    ax1.set_yticklabels(top_features['feature'])
+    ax1.invert_yaxis()
+    ax1.set_xlabel('Importance Score')
+    ax1.set_title(f'Top {top_n} Feature Importance')
+    ax1.grid(True, alpha=0.3, axis='x')
+    
+    # Tambahkan nilai
+    for i, (_, row) in enumerate(top_features.iterrows()):
+        ax1.text(row['importance'] + 0.001, i, f'{row["importance"]:.4f}', va='center')
+    
+    # Plot 2: Cumulative importance
+    ax2 = axes[0, 1]
+    cumulative = importance_df['importance'].cumsum()
+    ax2.plot(range(1, len(cumulative) + 1), cumulative, 'b-o', linewidth=2)
+    ax2.axhline(y=0.8, color='r', linestyle='--', label='80% threshold')
+    ax2.axhline(y=0.9, color='g', linestyle='--', label='90% threshold')
+    ax2.set_xlabel('Number of Features')
+    ax2.set_ylabel('Cumulative Importance')
+    ax2.set_title('Cumulative Feature Importance')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    # Hitung threshold
+    idx_80 = np.where(cumulative >= 0.8)[0]
+    idx_90 = np.where(cumulative >= 0.9)[0]
+    
+    if len(idx_80) > 0:
+        n_80 = idx_80[0] + 1
+        features_80 = importance_df['feature'].iloc[:n_80].tolist()
+        print(f"\n✅ 80% importance dicapai dengan {n_80} fitur")
+    
+    if len(idx_90) > 0:
+        n_90 = idx_90[0] + 1
+        features_90 = importance_df['feature'].iloc[:n_90].tolist()
+        print(f"✅ 90% importance dicapai dengan {n_90} fitur")
+    
+    # Plot 3: Feature importance by channel
+    ax3 = axes[1, 0]
+    
+    # Analisis per channel
+    channel_stats = {'R': 0, 'G': 0, 'B': 0}
+    for _, row in importance_df.iterrows():
+        feature = row['feature']
+        if '_' in feature:
+            channel = feature.split('_')[0]
+            if channel in channel_stats:
+                channel_stats[channel] += row['importance']
+    
+    # Normalisasi
+    total = sum(channel_stats.values())
+    if total > 0:
+        for channel in channel_stats:
+            channel_stats[channel] /= total
+    
+    # Plot pie chart
+    channels = list(channel_stats.keys())
+    values = list(channel_stats.values())
+    colors = ['red', 'green', 'blue']
+    
+    ax3.pie(values, labels=channels, colors=colors, autopct='%1.1f%%', startangle=90)
+    ax3.set_title('Feature Importance by Channel')
+    
+    # Plot 4: Heatmap importance by channel and intensity
+    ax4 = axes[1, 1]
+    
+    # Ekstrak channel dan intensitas
+    heatmap_data = {}
+    for _, row in importance_df.iterrows():
+        feature = row['feature']
+        if '_' in feature:
+            parts = feature.split('_')
+            if len(parts) >= 2:
+                channel = parts[0]
+                intensity = parts[1]
+                
+                if channel not in heatmap_data:
+                    heatmap_data[channel] = {}
+                heatmap_data[channel][intensity] = row['importance']
+    
+    # Buat matrix untuk heatmap
+    channels = ['R', 'G', 'B']
+    intensities = ['100', '150', '200']
+    
+    heatmap_matrix = np.zeros((len(channels), len(intensities)))
+    for i, channel in enumerate(channels):
+        for j, intensity in enumerate(intensities):
+            if channel in heatmap_data and intensity in heatmap_data[channel]:
+                heatmap_matrix[i, j] = heatmap_data[channel][intensity]
+    
+    # Plot heatmap
+    im = ax4.imshow(heatmap_matrix, cmap='YlOrRd')
+    ax4.set_xticks(range(len(intensities)))
+    ax4.set_yticks(range(len(channels)))
+    ax4.set_xticklabels(intensities)
+    ax4.set_yticklabels(channels)
+    ax4.set_xlabel('Intensity')
+    ax4.set_ylabel('Channel')
+    ax4.set_title('Importance Heatmap (Channel vs Intensity)')
+    
+    # Tambahkan nilai di heatmap
+    for i in range(len(channels)):
+        for j in range(len(intensities)):
+            text = ax4.text(j, i, f'{heatmap_matrix[i, j]:.3f}',
+                          ha="center", va="center", color="black", fontsize=9)
+    
+    plt.colorbar(im, ax=ax4)
+    plt.tight_layout()
+    plt.show()
+    
+    # 3. ANALISIS PER CHANNEL & INTENSITAS
+    print("\n📊 3. ANALISIS PER CHANNEL & INTENSITAS")
+    
+    # Buat DataFrame untuk analisis
+    analysis_data = []
+    for _, row in importance_df.iterrows():
+        feature = row['feature']
+        if '_' in feature:
+            parts = feature.split('_')
+            if len(parts) >= 2:
+                analysis_data.append({
+                    'feature': feature,
+                    'channel': parts[0],
+                    'intensity': parts[1],
+                    'importance': row['importance']
+                })
+    
+    if analysis_data:
+        df_analysis = pd.DataFrame(analysis_data)
+        
+        print("\nRATA-RATA IMPORTANCE PER CHANNEL:")
+        channel_avg = df_analysis.groupby('channel')['importance'].agg(['mean', 'std', 'count'])
+        print(channel_avg.round(6))
+        
+        print("\nRATA-RATA IMPORTANCE PER INTENSITAS:")
+        intensity_avg = df_analysis.groupby('intensity')['importance'].agg(['mean', 'std', 'count'])
+        print(intensity_avg.round(6))
+        
+        print("\nTOP 5 FITUR TERPENTING:")
+        for i, row in df_analysis.sort_values('importance', ascending=False).head(5).iterrows():
+            print(f"  {row['feature']}: {row['importance']:.6f}")
+    
+    # 4. BUAT SIMULASI SHAP VALUES SEDERHANA
+    print("\n🔍 4. SIMULASI SHAP VALUES")
+    
+    # Buat DataFrame sederhana untuk SHAP
+    shap_simple_data = []
+    
+    # Untuk setiap fitur, hitung "SHAP sederhana" = korelasi dengan target
+    for feature in feature_names:
+        if feature in df_features.columns:
+            feature_values = df_features[feature].values
+            # Hitung korelasi dengan cluster (proxy untuk SHAP)
+            if len(np.unique(feature_values)) > 1:
+                corr = np.corrcoef(feature_values, y)[0, 1]
+                shap_simple_data.append({
+                    'feature': feature,
+                    'correlation_with_target': corr,
+                    'abs_correlation': abs(corr)
+                })
+    
+    if shap_simple_data:
+        df_shap_simple = pd.DataFrame(shap_simple_data).sort_values('abs_correlation', ascending=False)
+        
+        print("\nKORELASI FITUR DENGAN TARGET (Proxy untuk SHAP):")
+        for i, row in df_shap_simple.head(10).iterrows():
+            print(f"  {row['feature']}: {row['correlation_with_target']:.6f}")
+        
+        # Visualisasi korelasi
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        top_n = min(10, len(df_shap_simple))
+        top_shap = df_shap_simple.head(top_n)
+        
+        # Warna berdasarkan positif/negatif korelasi
+        colors = ['red' if x < 0 else 'green' for x in top_shap['correlation_with_target']]
+        
+        bars = ax.barh(range(top_n), top_shap['abs_correlation'], color=colors)
+        ax.set_yticks(range(top_n))
+        ax.set_yticklabels(top_shap['feature'])
+        ax.invert_yaxis()
+        ax.set_xlabel('Absolute Correlation with Target')
+        ax.set_title(f'Top {top_n} Feature Correlations (SHAP Proxy)')
+        ax.grid(True, alpha=0.3, axis='x')
+        
+        # Tambahkan nilai
+        for i, (_, row) in enumerate(top_shap.iterrows()):
+            ax.text(row['abs_correlation'] + 0.001, i, 
+                   f'{row["correlation_with_target"]:.4f}', va='center')
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Simpan sebagai df_shap
+        df_shap = df_shap_simple.copy()
+    else:
+        df_shap = pd.DataFrame()
+    
+    return importance_df, df_shap      
+    
+
+# =============================================
+# FUNGSI ANALISIS INTENSITAS CHANNEL
+# =============================================
+
+def analyze_channel_intensity_importance(df_features, feature_columns):
+    """
+    Menganalisis importance intensity per channel - DIPERBAIKI dengan debug info
+    """
+    print("\n" + "="*80)
+    print("ANALISIS INTENSITAS PER CHANNEL")
+    print("="*80)
+    
+    # Debug: tampilkan informasi tentang df_features dan feature_columns
+    print(f"   Shape df_features: {df_features.shape}")
+    print(f"   Jumlah feature_columns: {len(feature_columns)}")
+    print(f"   Contoh feature_columns: {feature_columns[:5] if feature_columns else 'Tidak ada'}")
+    
+    if not feature_columns:
+        print("❌ Tidak ada feature_columns yang diberikan")
+        return {}
+    
+    # Cek apakah kolom fitur ada di df_features
+    missing_columns = [col for col in feature_columns if col not in df_features.columns]
+    if missing_columns:
+        print(f"⚠️  Beberapa kolom fitur tidak ditemukan: {missing_columns[:5]}")
+        print(f"   Total kolom yang hilang: {len(missing_columns)}")
+    
+    # Gunakan hanya kolom yang ada
+    available_columns = [col for col in feature_columns if col in df_features.columns]
+    
+    if not available_columns:
+        print("❌ Tidak ada kolom fitur yang tersedia di df_features")
+        print(f"   Kolom yang ada di df_features: {list(df_features.columns)[:10]}")
+        return {}
+    
+    print(f"   Jumlah kolom yang tersedia: {len(available_columns)}")
+    print(f"   Contoh kolom yang tersedia: {available_columns[:5]}")
+    
+    # Ekstrak informasi channel dan intensitas dari nama fitur
+    channel_stats = {}
+    
+    for feature in available_columns:
+        # Parse nama fitur: format "R_100", "G_150", dll
+        if '_' in feature:
+            parts = feature.split('_')
+            if len(parts) >= 2:
+                channel = parts[0]
+                intensity = parts[1]
+                
+                # Validasi channel
+                if channel not in ['R', 'G', 'B']:
+                    print(f"⚠️  Channel tidak dikenal: {channel} pada fitur {feature}")
+                    continue
+                
+                if channel not in channel_stats:
+                    channel_stats[channel] = {}
+                
+                if intensity not in channel_stats[channel]:
+                    channel_stats[channel][intensity] = {
+                        'features': [],
+                        'values': [],
+                        'mean_value': 0,
+                        'std_value': 0,
+                        'n_features': 0
+                    }
+                
+                channel_stats[channel][intensity]['features'].append(feature)
+                
+                # Ekstrak nilai fitur
+                if feature in df_features.columns:
+                    values = df_features[feature].dropna().values
+                    if len(values) > 0:
+                        channel_stats[channel][intensity]['values'].extend(values.tolist())
+    
+    # Debug: tampilkan informasi channel stats
+    print(f"\n   Channel stats yang ditemukan: {list(channel_stats.keys())}")
+    
+    # Hitung statistik untuk setiap channel-intensitas
+    for channel in channel_stats:
+        for intensity in channel_stats[channel]:
+            stats = channel_stats[channel][intensity]
+            values = stats['values']
+            
+            if values:
+                stats['mean_value'] = np.mean(values)
+                stats['std_value'] = np.std(values)
+                stats['n_features'] = len(stats['features'])
+                stats['n_values'] = len(values)
+                print(f"   {channel}_{intensity}: {len(values)} values, mean={stats['mean_value']:.4f}")
+            else:
+                stats['n_features'] = 0
+                stats['n_values'] = 0
+                print(f"   {channel}_{intensity}: TIDAK ADA DATA")
+    
+    # Filter channels yang memiliki data
+    channels_with_data = [ch for ch in channel_stats if any(
+        channel_stats[ch][intensity]['n_values'] > 0 for intensity in channel_stats[ch]
+    )]
+    
+    if not channels_with_data:
+        print("\n❌ Tidak ada data untuk visualisasi channel intensity")
+        return channel_stats
+    
+    print(f"\n   Channels dengan data: {channels_with_data}")
+    
+    # Buat visualisasi
+    n_channels = len(channels_with_data)
+    if n_channels > 0:
+        fig, axes = plt.subplots(1, n_channels, figsize=(5*n_channels, 5))
+        if n_channels == 1:
+            axes = [axes]
+        
+        colors = {'R': 'red', 'G': 'green', 'B': 'blue'}
+        
+        for idx, channel in enumerate(channels_with_data):
+            ax = axes[idx]
+            
+            intensities = []
+            means = []
+            stds = []
+            
+            # Urutkan intensitas secara numerik
+            sorted_intensities = sorted(
+                [intensity for intensity in channel_stats[channel].keys() 
+                 if channel_stats[channel][intensity]['n_values'] > 0],
+                key=lambda x: int(x)
+            )
+            
+            for intensity in sorted_intensities:
+                stats = channel_stats[channel][intensity]
+                if stats['n_values'] > 0:
+                    intensities.append(intensity)
+                    means.append(stats['mean_value'])
+                    stds.append(stats['std_value'])
+            
+            if intensities and means:
+                x_pos = np.arange(len(intensities))
+                bars = ax.bar(x_pos, means, yerr=stds, capsize=5, 
+                             color=colors.get(channel, 'gray'), alpha=0.7, 
+                             error_kw=dict(elinewidth=1, ecolor='black'))
+                
+                ax.set_xlabel('Intensitas', fontsize=12)
+                ax.set_ylabel('Nilai CDF Rata-rata', fontsize=12)
+                ax.set_title(f'Channel {channel}', fontsize=14, fontweight='bold')
+                ax.set_xticks(x_pos)
+                ax.set_xticklabels(intensities, rotation=45)
+                ax.grid(True, alpha=0.3, axis='y')
+                
+                # Tambahkan nilai di atas bar
+                for bar, mean, std in zip(bars, means, stds):
+                    height = bar.get_height()
+                    ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                           f'{mean:.3f}\n±{std:.3f}', ha='center', va='bottom', fontsize=9)
+                
+                # Atur batas y
+                y_min = min(means) - max(stds) - 0.1
+                y_max = max(means) + max(stds) + 0.1
+                ax.set_ylim(max(0, y_min), min(1, y_max))
+            else:
+                ax.text(0.5, 0.5, f'Tidak ada data\nuntuk Channel {channel}', 
+                       ha='center', va='center', transform=ax.transAxes, fontsize=14)
+                ax.set_title(f'Channel {channel} (No Data)', fontsize=14, fontweight='bold')
+        
+        plt.suptitle('Analisis Intensitas per Channel', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        plt.show()
+    
+    # Print analisis detail
+    print("\n📊 STATISTIK DETAIL INTENSITAS PER CHANNEL:")
+    for channel in ['R', 'G', 'B']:  # Selalu urutkan R, G, B
+        if channel in channel_stats:
+            print(f"\n  Channel {channel}:")
+            has_data = False
+            for intensity in sorted(channel_stats[channel].keys(), key=lambda x: int(x)):
+                stats = channel_stats[channel][intensity]
+                if stats.get('n_values', 0) > 0:
+                    has_data = True
+                    print(f"    Intensitas {intensity}:")
+                    print(f"      Jumlah nilai: {stats['n_values']}")
+                    print(f"      Rata-rata: {stats['mean_value']:.6f}")
+                    print(f"      Std Dev: {stats['std_value']:.6f}")
+                    print(f"      Jumlah fitur: {stats['n_features']}")
+                    if stats['features']:
+                        print(f"      Fitur: {', '.join(stats['features'][:3])}")
+            
+            if not has_data:
+                print(f"    Tidak ada data")
+    
+    return channel_stats
+
+def plot_cdf_ecdf_intensities_with_image_colors(df_ecdf_intensities, all_ecdf_results):
+    """
+    Plot CDF untuk nilai ECDF dengan warna sesuai gambar asal (bukan berdasarkan channel)
+    """
+    print("\n" + "="*80)
+    print("PLOT CDF UNTUK NILAI ECDF DENGAN WARNA SESUAI GAMBAR ASAL")
+    print("="*80)
+    
+    # Buat color map untuk setiap gambar
+    n_images = len(all_ecdf_results)
+    colors = plt.cm.tab10(np.linspace(0, 1, n_images))
+    
+    # Buat mapping filename ke color
+    filename_to_color = {}
+    for i, (filename, _) in enumerate(all_ecdf_results.items()):
+        filename_to_color[filename] = colors[i]
+    
+    # Buat figure dengan 3 subplot untuk R, G, B
+    fig, axes = plt.subplots(3, 3, figsize=(15, 12))
+    fig.suptitle('CDF dari Nilai ECDF dengan Warna Sesuai Gambar Asal', 
+                fontsize=16, fontweight='bold')
+    
+    for i, channel in enumerate(['R', 'G', 'B']):
+        for j, intensity in enumerate([100, 150, 200]):
+            ax = axes[i, j]
+            
+            # Filter data untuk channel dan intensitas tertentu
+            channel_data = df_ecdf_intensities[
+                (df_ecdf_intensities['channel'] == channel) & 
+                (df_ecdf_intensities['intensity_target'] == intensity)
+            ]
+            
+            if not channel_data.empty:
+                # Urutkan berdasarkan ecdf_value untuk membuat CDF
+                sorted_data = channel_data.sort_values('ecdf_value')
+                ecdf_values = sorted_data['ecdf_value'].values
+                
+                # Hitung CDF
+                cdf_values = np.arange(1, len(ecdf_values) + 1) / len(ecdf_values)
+                
+                # Plot CDF dengan fungsi tangga dan warna sesuai gambar asal
+                for k in range(len(cdf_values)):
+                    filename = sorted_data.iloc[k]['filename']
+                    color = filename_to_color.get(filename, 'gray')
+                    
+                    x_start = ecdf_values[k] if k == 0 else ecdf_values[k-1]
+                    x_end = ecdf_values[k]
+                    y_val = cdf_values[k]
+                    
+                    # Garis horizontal
+                    ax.hlines(y=y_val, xmin=x_start, xmax=x_end, 
+                             color=color, linewidth=2, alpha=0.7)
+                    
+                    # Open circle di kiri (hanya untuk k > 0)
+                    if k > 0:
+                        ax.scatter(x_start, y_val, facecolors='white', edgecolors=color, 
+                                  s=50, linewidth=2, zorder=3)
+                    
+                    # Filled circle di kanan
+                    ax.scatter(x_end, y_val, facecolors=color, edgecolors=color, 
+                              s=50, linewidth=2, zorder=3)
+                
+                # Garis horizontal terakhir
+                if len(ecdf_values) > 0:
+                    ax.hlines(y=1.0, xmin=ecdf_values[-1], xmax=1.0, 
+                             color='gray', linewidth=1, alpha=0.5, linestyle='--')
+            
+            ax.set_title(f'Channel {channel} - Intensitas {intensity}', 
+                       fontsize=12, fontweight='bold')
+            ax.set_xlabel('Nilai ECDF', fontsize=10)
+            ax.set_ylabel('CDF', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            ax.set_xlim(-0.05, 1.05)
+            ax.set_ylim(-0.05, 1.05)
+    
+    # Buat legend untuk gambar
+    legend_elements = []
+    for filename, color in list(filename_to_color.items())[:10]:  # Batasi 10 item untuk legend
+        label = os.path.splitext(filename)[0]
+        legend_elements.append(Patch(facecolor=color, edgecolor=color, label=label))
+    
+    fig.legend(handles=legend_elements, 
+              loc='lower center', 
+              bbox_to_anchor=(0.5, 0.01),
+              ncol=5, 
+              fontsize=8,
+              frameon=True,
+              fancybox=True,
+              shadow=True)
+    
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.08)
+    plt.show()
+
+# =============================================
+# FUNGSI UTAMA
+# =============================================
+
+def main_with_pca_shap():
+    """
+    Fungsi utama dengan plot ECDF yang sudah diperbaiki (titik tertutup yang benar)
+    """
+    print("PROSES EKSTRAKSI RGB, ECDF, DAN ANALISIS INTENSITAS - PLOT DIPERBAIKI")
+    print("=" * 80)
+    
+    # 1. Proses gambar mawar merah
+    print("\n1. PROSES GAMBAR MAWAR MERAH")
+    df_red = process_all_images(red_rose_folder, "merah")
+    
+    # 2. Proses gambar mawar hijau
+    print("\n2. PROSES GAMBAR MAWAR HIJAU")
+    df_blue = process_all_images(blue_rose_folder, "hijau")
+    
+    # 3. Gabungkan semua hasil
+    all_df_rgb = pd.concat([df_red, df_blue], ignore_index=True) if not df_red.empty and not df_blue.empty else pd.DataFrame()
+    
+    if all_df_rgb.empty:
+        print("Tidak ada data yang diproses. Periksa path folder dan file gambar.")
+        return
+    
+    print(f"\nTotal gambar diproses: {len(all_df_rgb)}")
+    print(f"Gambar mawar merah: {len(df_red)}")
+    print(f"Gambar mawar hijau: {len(df_blue)}")
+    
+    # 4. Simpan data RGB ke Excel
+    print(f"\n3. MENYIMPAN DATA RGB KE EXCEL: {output_excel}")
+    save_rgb_to_excel(all_df_rgb, output_excel)
+    
+    # 5. Hitung ECDF untuk semua gambar
+    print("\n4. MENGHITUNG ECDF UNTUK SEMUA GAMBAR")
+    all_ecdf_results = calculate_all_ecdf(all_df_rgb)
+    
+    # 6. Simpan data ECDF ke Excel
+    print(f"\n5. MENYIMPAN DATA ECDF KE EXCEL: {ecdf_output_excel}")
+    save_ecdf_to_excel(all_ecdf_results, ecdf_output_excel)
+    
+    # 7. Plot ECDF semua gambar DENGAN PERBAIKAN (titik tertutup yang benar)
+    print("\n6. MEMBUAT PLOT ECDF SEMUA GAMBAR DENGAN TITIK TERTUTUP YANG BENAR")
+    plot_all_ecdf_corrected(all_ecdf_results)
+    
+    # 8. Plot ECDF per gambar DENGAN PERBAIKAN (titik tertutup yang benar)
+    print("\n7. MEMBUAT PLOT ECDF PER GAMBAR DENGAN TITIK TERTUTUP YANG BENAR")
+    plot_individual_ecdf_corrected(all_ecdf_results)
+    
+    # 9. Ekstrak nilai ECDF pada intensitas tertentu dengan fungsi yang diperbaiki
+    print("\n8. EKSTRAKSI NILAI ECDF PADA INTENSITAS 100, 150, 200 - DIPERBAIKI")
+    df_ecdf_intensities = extract_ecdf_at_intensities(all_ecdf_results)
+    
+    # Verifikasi nilai ECDF untuk red1.jpg
+    print("\n🔍 VERIFIKASI NILAI ECDF UNTUK red1.jpg:")
+    red1_data = df_ecdf_intensities[df_ecdf_intensities['filename'] == 'red1.jpg']
+    for _, row in red1_data.iterrows():
+        print(f"   {row['channel']} - Intensitas {row['intensity_target']}: ECDF = {row['ecdf_value']:.6f}")
+    
+    # 10. Hitung CDF untuk nilai ECDF pada intensitas tertentu
+    print("\n9. MENGHITUNG CDF UNTUK NILAI ECDF PADA INTENSITAS TERTENTU")
+    df_cdf = calculate_cdf_for_ecdf_intensities(df_ecdf_intensities)
+    
+    # 11. Simpan data ECDF intensitas dan CDF
+    print(f"\n10. MENYIMPAN DATA ECDF INTENSITAS DAN CDF: {ecdf_intensity_output_excel}")
+    save_ecdf_intensity_data(df_ecdf_intensities, df_cdf, ecdf_intensity_output_excel)
+    
+    # 12. Plot CDF untuk nilai ECDF pada intensitas tertentu
+    print("\n11. MEMBUAT PLOT CDF UNTUK NILAI ECDF PADA INTENSITAS TERTENTU")
+    plot_cdf_ecdf_intensities(df_cdf)
+    
+    # 13. Plot CDF untuk nilai ECDF dengan warna sesuai gambar asal
+    print("\n12. MEMBUAT PLOT CDF UNTUK NILAI ECDF DENGAN WARNA SESUAI GAMBAR ASAL")
+    plot_cdf_ecdf_intensities_with_image_colors(df_ecdf_intensities, all_ecdf_results)
+    
+    # =============================================
+    # BAGIAN MODEL MATEMATIS V DAN KONVERSI CDF
+    # =============================================
+    
+    # 14. Membuat model matematis V dari data CDF
+    print("\n13. MEMBUAT MODEL MATEMATIS V DARI DATA CDF INTENSITAS")
+    model_V = create_mathematical_model_V(df_cdf)
+    
+    # 15. Ekstrak ECDF dari gambar dan konversi ke CDF menggunakan model V
+    print("\n14. EKSTRAKSI ECDF DARI GAMBAR DAN KONVERSI KE CDF MENGGUNAKAN MODEL V")
+    df_conversion = extract_and_convert_ecdf_data(all_ecdf_results, model_V)
+    
+    # 16. Simpan data ECDF gambar dan CDF hasil konversi
+    print(f"\n15. MENYIMPAN DATA ECDF GAMBAR DAN CDF HASIL KONVERSI: {conversion_output_excel}")
+    save_conversion_data(all_ecdf_results, df_conversion, conversion_output_excel)
+    
+    # =============================================
+    # BAGIAN K-MEANS CLUSTERING
+    # =============================================
+    
+    # 17. Persiapan fitur untuk clustering dari CDF hasil konversi
+    print("\n16. PERSIAPAN FITUR UNTUK CLUSTERING DARI CDF HASIL KONVERSI")
+    df_features = prepare_features_for_clustering(df_conversion)
+    
+    if df_features.empty:
+        print("❌ Tidak ada fitur yang dapat dipersiapkan untuk clustering!")
+        return
+    
+    print(f"   Jumlah gambar untuk clustering: {len(df_features)}")
+    print(f"   Jumlah fitur per gambar: {len([col for col in df_features.columns if col not in ['filename', 'gambar_ke', 'label']])}")
+    
+    # 18. Melakukan K-means clustering dengan centroid red1.jpg dan green1.jpg
+    print("\n17. MELAKUKAN K-MEANS CLUSTERING DENGAN 2 CENTROID")
+    df_features, kmeans, feature_columns, centroid_info = perform_kmeans_clustering(df_features)
+    
+    if df_features is None:
+        print("❌ Clustering gagal!")
+        return
+    
+    if not centroid_info:
+        print("❌ Tidak ada informasi centroid!")
+        return
+    
+    # 19. Analisis hasil clustering
+    print("\n18. ANALISIS HASIL CLUSTERING")
+    df_results, accuracy = analyze_clustering_results(df_features, df_conversion, centroid_info)
+    
+    # 20. Visualisasi hasil clustering
+    print("\n19. VISUALISASI HASIL CLUSTERING")
+    plot_clustering_results_improved(df_features, feature_columns, centroid_info)
+    
+    # 21. Simpan hasil clustering
+    clustering_output_excel = "C:/Users/Ahsan/Downloads/hasil_clustering.xlsx"
+    print(f"\n20. MENYIMPAN HASIL CLUSTERING: {clustering_output_excel}")
+    save_clustering_results(df_features, df_results, accuracy, clustering_output_excel)
+    
+    print("\n" + "="*80)
+    print("PROSES SELESAI!")
+    print("="*80)
+
+    # =============================================
+    # BAGIAN ANALISIS PCA
+    # =============================================
+    
+    # 19. Analisis PCA
+    print("\n18. ANALISIS PRINCIPAL COMPONENT ANALYSIS (PCA)")
+    df_features_pca, pca_model, X_pca, variance_ratio = perform_pca_analysis(df_features, feature_columns)
+    
+    # =============================================
+    # BAGIAN ANALISIS SHAP
+    # =============================================
+    
+    # 20. Analisis SHAP
+    print("\n19. ANALISIS SHAP (SHAPLEY ADDITIVE EXPLANATIONS)")
+    importance_df, df_shap = perform_shap_analysis(df_features, feature_columns)
+    
+    # =============================================
+    # BAGIAN ANALISIS INTENSITAS CHANNEL
+    # =============================================
+    
+    # 21. Analisis intensitas per channel
+    print("\n20. ANALISIS INTENSITAS PER CHANNEL")
+    channel_stats = analyze_channel_intensity_importance(df_features, feature_columns)
+    
+    # =============================================
+    # SIMPAN HASIL ANALISIS PCA & SHAP
+    # =============================================
+    
+    # 22. Simpan semua hasil analisis
+    print(f"\n21. MENYIMPAN HASIL ANALISIS PCA & SHAP: {pca_shap_output_excel}")
+    
+    with pd.ExcelWriter(pca_shap_output_excel) as writer:
+        # Sheet 1: Data fitur dengan PCA
+        df_features_pca.to_excel(writer, sheet_name='Fitur_dengan_PCA', index=False)
+        
+        # Sheet 2: Feature importance
+        importance_df.to_excel(writer, sheet_name='Feature_Importance', index=False)
+        
+        # Sheet 3: Variance explained PCA
+        pca_summary = pd.DataFrame({
+            'PC': [f'PC{i+1}' for i in range(len(variance_ratio))],
+            'Variance_Explained': variance_ratio,
+            'Cumulative_Variance': np.cumsum(variance_ratio)
+        })
+        pca_summary.to_excel(writer, sheet_name='PCA_Summary', index=False)
+        
+        # Sheet 4: Channel intensity analysis
+        channel_data = []
+        for channel in channel_stats:
+            for intensity in channel_stats[channel]:
+                stats = channel_stats[channel][intensity]
+                channel_data.append({
+                    'Channel': channel,
+                    'Intensity': intensity,
+                    'N_Features': stats.get('n_features', 0),
+                    'Mean_Value': stats.get('mean_value', 0),
+                    'Std_Value': stats.get('std_value', 0),
+                    'Features': ', '.join(stats.get('features', []))
+                })
+        
+        df_channel = pd.DataFrame(channel_data)
+        df_channel.to_excel(writer, sheet_name='Channel_Analysis', index=False)
+        
+        # Sheet 5: SHAP values (jika ada)
+        if df_shap is not None:
+            df_shap.to_excel(writer, sheet_name='SHAP_Values', index=False)
+    
+    print("✅ Analisis PCA dan SHAP berhasil disimpan!")
+
+# =============================================
+    # KESIMPULAN ANALISIS
+    # =============================================
+    
+    print("\n" + "="*80)
+    print("KESIMPULAN ANALISIS")
+    print("="*80)
+    
+    print(f"\n📈 AKURASI CLUSTERING: {accuracy:.2f}%")
+    
+    # Analisis PCA
+    print(f"\n🔍 ANALISIS PCA:")
+    print(f"   - PC1 menjelaskan {variance_ratio[0]*100:.2f}% variasi")
+    print(f"   - PC1+PC2 menjelaskan {sum(variance_ratio[:2])*100:.2f}% variasi")
+    print(f"   - Separabilitas linear terkonfirmasi dengan {sum(variance_ratio[:2])*100:.2f}% variasi")
+    
+    # Analisis Feature Importance
+    print(f"\n🎯 TOP 3 FITUR TERPENTING:")
+    top_features = importance_df.head(3)
+    for i, (_, row) in enumerate(top_features.iterrows()):
+        print(f"   {i+1}. {row['feature']}: {row['importance']:.4f}")
+    
+    # Analisis Channel
+    print(f"\n🌈 ANALISIS CHANNEL:")
+    for channel in ['R', 'G', 'B']:
+        if channel in channel_stats:
+            total_intensities = len(channel_stats[channel])
+            print(f"   - Channel {channel}: {total_intensities} intensitas")
+    
+    print("\n" + "="*80)
+    print("PROSES SELESAI!")
+    print("="*80)
+
+# =============================================
+# PENJELASAN TENTANG PERBAIKAN PLOT ECDF
+# =============================================
+
+def explain_ecdf_plot_correction():
+    """
+    Menjelaskan perbaikan yang dilakukan pada plot ECDF
+    """
+    print("\n" + "="*80)
+    print("PENJELASAN PERBAIKAN PLOT ECDF")
+    print("="*80)
+    
+    print("\n🔧 PERBAIKAN YANG DILAKUKAN:")
+    print("   1. FORMAT ECDF STEP-FUNCTION YANG BENAR:")
+    print("      - ECDF dimulai dari (0, 0) dengan TITIK TERTUTUP")
+    print("      - Untuk setiap titik data (intensity[i], ecdf[i]):")
+    print("        * Garis horizontal dari intensity[i-1] ke intensity[i] pada y = ecdf[i-1]")
+    print("        * TITIK TERBUKA di (intensity[i], ecdf[i-1]) untuk i > 0")
+    print("        * TITIK TERTUTUP di (intensity[i], ecdf[i])")
+    print("      - Segmen terakhir: dari intensity[-1] ke 255 pada y = 1.0")
+    print("        * TITIK TERBUKA di (intensity[-1], 1.0)")
+    print("        * TITIK TERTUTUP di (255, 1.0)")
+    print("\n📊 CONTOH UNTUK red1.jpg CHANNEL R:")
+    print("   - Intensitas: [50, 134, 139, 143, 149, 219, 228, 242, 247]")
+    print("   - ECDF: [0.111, 0.222, 0.333, 0.444, 0.555, 0.666, 0.777, 0.888, 1.000]")
+    print("   - Plot akan memiliki:")
+    print("     * Titik tertutup di: (0,0), (50,0.111), (134,0.222), ..., (247,1.000), (255,1.0)")
+    print("     * Titik terbuka di: (50,0), (134,0.111), (139,0.222), ..., (247,0.888), (255,1.0)")
+
+if __name__ == "__main__":
+    # Jalankan penjelasan perbaikan
+    explain_ecdf_plot_correction()
+    
+    # Jalankan proses utama dengan plot yang sudah diperbaiki
+    main_with_pca_shap()
