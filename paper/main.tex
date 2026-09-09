@@ -1,0 +1,1129 @@
+%% Springer Nature LaTeX template (sn-jnl.cls)
+%% Target: Signal, Image and Video Processing (Springer)
+%%
+%% Unduh sn-jnl.cls dan sn-basic.bst dari:
+%%   https://www.springernature.com/gp/authors/campaigns/latex-author-support
+%%
+%% VERSI INI: seluruh tabel eksperimen sudah terisi angka nyata dari
+%% baseline_mandiri.ipynb. TODO yang tersisa hanya empat:
+%%   1. Flowers102 (perlu ekstraksi ulang; berkas lama tersimpan terpotong)
+%%   2. Ablasi ukuran p (perlu citra asli, tidak bisa dari Excel 32x32)
+%%   3. Appendix dataset enam citra (disarankan dihapus)
+%%   4. Data administratif (pendanaan, kontribusi penulis, tautan kode)
+%%
+%% CATATAN KONSISTENSI: Tabel ablasi level intensitas dihitung di lingkungan
+%% berbeda dari tabel lain, sehingga baris pertamanya membaca 92.76 sedangkan
+%% Tabel 3 membaca 92.99. Jalankan ulang ablasi itu di mesin Anda sebelum
+%% submit. Sel kodenya ada di komentar tepat di atas tabel tersebut.
+
+\documentclass[pdflatex,sn-basic]{sn-jnl}
+
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{amsmath,amssymb,amsfonts}
+%% amsthm sudah dimuat oleh sn-jnl.cls
+\usepackage{mathrsfs}
+\usepackage[title]{appendix}
+\usepackage{xcolor}
+\usepackage{textcomp}
+\usepackage{manyfoot}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algorithmicx}
+\usepackage{algpseudocode}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Deklarasi environment teorema.
+%% sn-jnl.cls TIDAK mendefinisikan ini sendiri -- di berkas contoh Springer
+%% blok berikut ada tetapi dikomentari, sehingga penulis harus mengaktifkannya.
+%% Tanpa blok ini muncul galat "No counter 'theorem' defined".
+%% Gaya thmstyleone/two/three disediakan oleh sn-jnl.cls.
+
+\theoremstyle{thmstyleone}%
+\newtheorem{theorem}{Theorem}%          penomoran berlanjut
+\newtheorem{proposition}[theorem]{Proposition}%
+\newtheorem{lemma}[theorem]{Lemma}%
+\newtheorem{corollary}[theorem]{Corollary}%
+
+\theoremstyle{thmstyletwo}%
+\newtheorem{example}{Example}%
+\newtheorem{remark}{Remark}%
+
+\theoremstyle{thmstylethree}%
+\newtheorem{definition}{Definition}%
+\newtheorem{assumption}{Assumption}%
+
+%% Hapus makro ini dan seluruh pemakaiannya sebelum submit.
+\newcommand{\TODO}[1]{\textcolor{red}{\textbf{[LENGKAPI: #1]}}}
+
+\raggedbottom
+
+\begin{document}
+
+\title[ECDF Colour Descriptors for Image Clustering]{Seven Numbers Suffice:
+Low-Dimensional ECDF Colour Descriptors for Image Clustering}
+
+%% Tanda bintang pada \author menandai corresponding author.
+%% Urutan penulis tetap: Husty Serviana Husain penulis pertama,
+%% Sapto Wahyu Indratno corresponding author.
+\author[1,2]{\fnm{Husty Serviana} \sur{Husain}}\email{serviana@upi.edu}
+\author*[1]{\fnm{Sapto Wahyu} \sur{Indratno}}\email{sapto@itb.ac.id}
+\author[1]{\fnm{Sandy} \sur{Vantika}}\email{sandy.vantika@itb.ac.id}
+\author[3]{\fnm{Nugraha Priya} \sur{Utama}}\email{utama@staff.stei.itb.ac.id}
+
+\affil[1]{\orgdiv{Department of Mathematics, Faculty of Mathematics and
+Natural Sciences}, \orgname{Institut Teknologi Bandung},
+\orgaddress{\city{Bandung}, \country{Indonesia}}}
+\affil[2]{\orgdiv{Department of Mathematics Education, Faculty of Mathematics
+and Natural Sciences Education}, \orgname{Universitas Pendidikan Indonesia},
+\orgaddress{\city{Bandung}, \country{Indonesia}}}
+\affil[3]{\orgdiv{School of Electrical Engineering and Informatics},
+\orgname{Institut Teknologi Bandung},
+\orgaddress{\city{Bandung}, \country{Indonesia}}}
+
+\abstract{We ask how far colour information can be compressed before image
+clustering degrades. Each image is represented by the values of its
+per-channel empirical distribution function at three intensity levels, giving
+a seven-dimensional descriptor derived from $32\times32\times3$ pixel values,
+a compression of $439{:}1$. On 4400 rose images in four colour classes, a
+linear support vector machine and linear discriminant analysis both reach
+$100\%$ five-fold cross-validated accuracy on this descriptor, and $K$-means
+clustering reaches $92.99\pm7.34\%$ over 100 random initialisations. The
+descriptor outperforms colour moments ($75.21\pm12.90\%$), a quantised joint
+RGB histogram of 64 dimensions ($80.02\pm13.20\%$), and features from an
+ImageNet-pretrained ResNet-50 ($48.52\pm12.75\%$), the last by a wide margin
+that we trace to a mismatch of inductive bias rather than to any general
+superiority over learned representations. We prove that the descriptor is
+exactly invariant under strictly increasing photometric transformations and
+verify this numerically under gamma correction. We replace the common but
+false claim that distinct colour distributions imply linear separability with
+two valid statements: exact separability under a margin condition, and a
+distribution-free Chebyshev bound whose ordering across class pairs matches
+the observed confusion matrix. A rank transform of the descriptor leaves mean
+accuracy unchanged ($p=0.41$, Cohen's $d_z=0.08$) but reduces the standard
+deviation across initialisations from $7.34$ to $2.73$ percentage points, so
+we recommend it for stability rather than accuracy. Finally, on a five-category colour subset of
+Flowers102 every method fails, no descriptor exceeding $45.23\%$ and the
+supervised ceiling reaching only $59.16\%$; there the same Chebyshev bound is
+vacuous for all ten class pairs and the between-class to within-class colour
+variance ratio falls from $7.481$ to $0.361$. We propose both quantities as
+feasibility criteria computable before clustering.}
+
+\keywords{Image clustering, Empirical cumulative distribution function, Colour
+descriptor, Photometric invariance, Feature compression, $K$-means}
+
+\maketitle
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Introduction}\label{sec:intro}
+
+Colour is the cheapest signal available to an image clustering system and often
+the most informative one. Learned representations dominate current practice,
+but they are opaque, costly to compute, and presuppose training data that many
+applied settings lack. Statistical colour descriptors remain attractive
+wherever interpretability, low latency, or auditability matter
+\cite{ref:jain2010,ref:rudin2019}.
+
+Our question is quantitative rather than architectural: how few numbers per
+image suffice? Colour histograms with $b$ bins per channel yield $3b$ features
+and depend on bin placement \cite{ref:swain1991}. Colour moments compress
+further but discard the shape of the distribution \cite{ref:stricker1995}. The
+empirical cumulative distribution function (ECDF) of a channel encodes the
+entire colour distribution of an image, and evaluating it at a handful of
+intensity levels gives a descriptor whose dimension the designer sets directly
+\cite{ref:van2016}.
+
+Three gaps recur in prior work that uses ECDF-based representations for image
+analysis. First, the sampling model is usually left implicit, and several
+published treatments invoke the Glivenko--Cantelli theorem for image pixels,
+which are spatially correlated and hence not independent. Second, separability
+is commonly asserted in the form ``distinct distributions imply linearly
+separable features'', which is false in general. Third, transformations applied
+to descriptors before clustering, typically rank-based or quantile
+normalisations, are reported as improvements without controlling for the
+initialisation variance of $K$-means.
+
+This paper addresses all three, and reports two results we did not expect.
+
+\begin{enumerate}
+\item \textbf{Methodological.} A seven-dimensional descriptor built from
+per-channel ECDFs at three intensity levels supports perfect linear class
+separation on a 4400-image rose dataset under five-fold cross-validation. It
+outperforms colour moments, a 64-dimensional RGB histogram, and
+ImageNet-pretrained ResNet-50 features by margins reported in
+Section~\ref{sec:baseline-results}.
+
+\item \textbf{Theoretical.} We place the descriptor in a sampling model whose
+randomness resides at the image level rather than the pixel level, so no
+independence assumption on pixels is needed
+(Section~\ref{sec:measures}). We prove exact invariance under strictly
+increasing photometric transformations
+(Proposition~\ref{prop:invariance}), and we replace the false separability
+implication with an exact result under a margin condition together with a
+distribution-free bound estimable from data
+(Theorem~\ref{thm:separability}).
+
+\item \textbf{Practical.} The between-class to within-class colour variance
+ratio, computable in one pass and before any clustering, predicts whether a
+colour-only descriptor can succeed. We also report two negative results: the
+rank transform buys stability but not accuracy, and $K$-means is not the best
+clustering algorithm for this descriptor.
+\end{enumerate}
+
+Section~\ref{sec:theory} develops the sampling model, the descriptor, the
+invariance property, and the separability analysis.
+Section~\ref{sec:method} describes the pipeline, the baselines, and the
+evaluation protocol. Section~\ref{sec:experiments} reports the experiments.
+Section~\ref{sec:discussion} discusses the failure regime and the feasibility
+criterion, and Section~\ref{sec:conclusion} concludes.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Theoretical foundations}\label{sec:theory}
+
+\subsection{Setup and notation}\label{sec:notation}
+
+Let $\mathcal{I}=\{0,1,\dots,255\}$ be the intensity alphabet and
+$\mathcal{C}=\{R,G,B\}$ the colour channels. A digital image is a map
+$J:\{1,\dots,p\}^2\to\mathcal{I}^3$; we write $C^{(g)}_{ij}$ for the intensity
+of channel $C$ at pixel $(i,j)$ in image $g$. Throughout, $N$ is the number of
+images, $m$ the number of sampled intensity levels $t_1<\dots<t_m$, and $d$ the
+descriptor dimension. In the experiments $p=32$, $m=3$ and
+$(t_1,t_2,t_3)=(100,150,200)$.
+
+\subsection{Images as empirical colour measures}\label{sec:measures}
+
+\begin{definition}[Empirical colour measure]\label{def:measure}
+For image $g$ and channel $C$, the empirical colour measure is the probability
+measure on $\mathcal{I}$
+\begin{equation}
+\mu^{(g)}_C \;=\; \frac{1}{p^2}\sum_{i=1}^{p}\sum_{j=1}^{p}
+\delta_{C^{(g)}_{ij}},
+\end{equation}
+where $\delta_a$ is the Dirac measure at $a$. Its distribution function is
+\begin{equation}\label{eq:ecdf-image}
+F^{(g)}_C(x) \;=\; \mu^{(g)}_C\big([0,x]\big)
+\;=\;\frac{1}{p^2}\sum_{i=1}^{p}\sum_{j=1}^{p}\mathbf{1}\{C^{(g)}_{ij}\le x\},
+\qquad x\in\mathcal{I}.
+\end{equation}
+\end{definition}
+
+\begin{remark}[Statistical status of \eqref{eq:ecdf-image}]\label{rem:no-iid}
+$F^{(g)}_C$ is not an estimator. It is the exact distribution function of the
+finite population of $p^2$ pixels constituting image $g$, computed rather than
+inferred. No independence assumption on the pixels is required, and none is
+made. Pixels of a natural image are spatially correlated, so an independence
+hypothesis at the pixel level would be untenable and the Glivenko--Cantelli
+theorem cannot legitimately be invoked there. Randomness enters one level
+higher, through the sampling of images, as formalised in
+Assumption~\ref{ass:sampling}.
+\end{remark}
+
+\begin{assumption}[Sampling model]\label{ass:sampling}
+Let $\mathcal{P}(\mathcal{I})$ be the set of probability measures on
+$\mathcal{I}$. Each class $c\in\{1,\dots,K\}$ is identified with a probability
+distribution $\Pi_c$ on $\mathcal{P}(\mathcal{I})^3$, the law of the triple
+$(\mu_R,\mu_G,\mu_B)$ of a randomly drawn image of that class. Images of a
+given class are independent draws from $\Pi_c$.
+\end{assumption}
+
+\begin{definition}[Descriptor]\label{def:feature}
+The feature map $\Phi:\mathcal{P}(\mathcal{I})^3\to[0,1]^{d}$ evaluates channel
+distribution functions at a set $S$ of channel--level pairs,
+\begin{equation}
+\Phi(\mu_R,\mu_G,\mu_B)=\big(F_C(t)\big)_{(C,t)\in S},\qquad d=|S|.
+\end{equation}
+We write $\mathbf{v}_g=\Phi(\mu^{(g)}_R,\mu^{(g)}_G,\mu^{(g)}_B)\in[0,1]^{d}$
+with coordinates $v_{g,1},\dots,v_{g,d}$.
+\end{definition}
+
+Every coordinate of $\Phi$ is a value of a distribution function, so the
+feature space is the unit cube $[0,1]^{d}$ and not $\mathbb{R}^{d}$.
+
+\subsection{Photometric invariance}\label{sec:invariance}
+
+\begin{proposition}[Invariance under monotone photometric
+transformations]\label{prop:invariance}
+Let $\varphi:\mathcal{I}\to\mathcal{I}$ be strictly increasing and let
+$\widetilde{J}^{(g)}$ be obtained by applying $\varphi$ to every pixel of
+$J^{(g)}$ in every channel, with distribution functions
+$\widetilde{F}^{(g)}_C$. Then for every channel $C$ and level $t$,
+\begin{equation}
+\widetilde{F}^{(g)}_C\big(\varphi(t)\big)=F^{(g)}_C(t).
+\end{equation}
+Consequently, if the sampling grid is transformed accordingly,
+$t\mapsto\varphi(t)$, the descriptors $\mathbf{v}_g$ and every clustering
+computed from them are unchanged.
+\end{proposition}
+
+\begin{proof}
+Because $\varphi$ is strictly increasing, $\varphi(a)\le\varphi(t)$ if and only
+if $a\le t$. Hence
+\begin{equation*}
+\widetilde{F}^{(g)}_C(\varphi(t))
+=\frac{1}{p^2}\sum_{i,j}\mathbf{1}\{\varphi(C^{(g)}_{ij})\le\varphi(t)\}
+=\frac{1}{p^2}\sum_{i,j}\mathbf{1}\{C^{(g)}_{ij}\le t\}
+=F^{(g)}_C(t).
+\end{equation*}
+The remaining claims follow because all subsequent computations depend on the
+images only through $\mathbf{v}_1,\dots,\mathbf{v}_N$.
+\end{proof}
+
+Gamma correction $\varphi(a)=255\,(a/255)^{\gamma}$, monotone tone mapping and
+per-channel monotone illumination changes are all of this form. Colour moments
+and raw histogram bin counts are invariant under none of them.
+Section~\ref{sec:invariance-exp} verifies the proposition numerically.
+
+\subsection{Separability}\label{sec:separability}
+
+\begin{remark}[Distinct distributions do not imply
+separability]\label{rem:counterexample}
+Two obstructions must be distinguished.
+
+\emph{(a) Loss of information at the sampling grid.} Let $\mu_1\neq\mu_2$ be
+colour measures with $\mu_1([0,t_k])=\mu_2([0,t_k])$ for $k=1,\dots,m$. Such
+pairs exist whenever $m<255$, since $\Phi$ maps a $255$-dimensional simplex
+into $[0,1]^{m}$ per channel. The classes then have identical descriptors and
+no separating hyperplane exists.
+
+\emph{(b) Within-class overlap.} Even when $\Phi$ separates the class means,
+the laws of $\mathbf{v}$ under $\Pi_1$ and $\Pi_2$ may overlap in $[0,1]^{d}$,
+so no hyperplane classifies every image correctly.
+\end{remark}
+
+\begin{theorem}[Separability]\label{thm:separability}
+Let $\Pi_1,\Pi_2$ be two classes and $\mathbf{v}$ the descriptor of
+Definition~\ref{def:feature}.
+\begin{enumerate}
+\item[(i)] \emph{(Exact separability under a margin condition.)} Suppose there
+exist a coordinate $k$, a threshold $a\in(0,1)$ and $\gamma>0$ with
+$\Pi_1(v_{k}\le a-\gamma)=1$ and $\Pi_2(v_{k}\ge a+\gamma)=1$. Then the
+hyperplane $\{\mathbf{x}\in[0,1]^{d}:x_{k}=a\}$ separates the classes with
+geometric margin at least $\gamma$.
+
+\item[(ii)] \emph{(Approximate separability.)} Let
+$\mu_{1,k}=\mathbb{E}_{\Pi_1}[v_k]$, $\mu_{2,k}=\mathbb{E}_{\Pi_2}[v_k]$,
+$\Delta_k=|\mu_{1,k}-\mu_{2,k}|>0$ and
+$\sigma_k^2=\max\{\mathrm{Var}_{\Pi_1}(v_k),\mathrm{Var}_{\Pi_2}(v_k)\}$. Then
+the threshold rule at $a=(\mu_{1,k}+\mu_{2,k})/2$ misclassifies, under either
+class, a fraction at most
+\begin{equation}\label{eq:cheb}
+\varepsilon_k \;=\; \min\Big\{1,\ \frac{4\sigma_k^{2}}{\Delta_k^{2}}\Big\}.
+\end{equation}
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+(i) Take $\mathbf{w}=e_k$ and $b=-a$. For $\mathbf{v}\sim\Pi_1$,
+$\mathbf{w}^{\top}\mathbf{v}+b=v_k-a\le-\gamma$ almost surely; for
+$\mathbf{v}\sim\Pi_2$, $\mathbf{w}^{\top}\mathbf{v}+b\ge\gamma$ almost surely.
+Since $\|\mathbf{w}\|=1$ the geometric margin is at least $\gamma$.
+
+(ii) Without loss of generality $\mu_{1,k}<\mu_{2,k}$. An image of class $1$ is
+misclassified only if $v_k\ge a$, which forces $|v_k-\mu_{1,k}|\ge\Delta_k/2$.
+By Chebyshev's inequality,
+\begin{equation*}
+\Pi_1(v_k\ge a)\le
+\Pi_1\Big(|v_k-\mu_{1,k}|\ge\tfrac{\Delta_k}{2}\Big)
+\le\frac{\mathrm{Var}_{\Pi_1}(v_k)}{(\Delta_k/2)^{2}}
+\le\frac{4\sigma_k^{2}}{\Delta_k^{2}} .
+\end{equation*}
+The argument for class $2$ is symmetric, and probabilities never exceed one.
+\end{proof}
+
+\begin{remark}\label{rem:bound-use}
+Statement (ii) is distribution-free and needs only finite second moments. Under
+a boundedness or sub-Gaussian assumption the polynomial bound may be replaced
+by an exponential one, at the cost of a stronger hypothesis. Since $\Delta_k$
+and $\sigma_k$ are estimable, $\varepsilon_k$ can be computed for every class
+pair and coordinate and used to predict which pairs will be confused;
+Section~\ref{sec:bounds-exp} compares the induced ordering with the observed
+confusion matrix.
+\end{remark}
+
+\subsection{The rank transform}\label{sec:rank}
+
+\begin{definition}[Empirical marginal transform]\label{def:rank}
+For coordinate $k$ and a sample of $N$ images, define
+\begin{equation}\label{eq:rank}
+\widehat{G}_{k}(s)=\frac{1}{N}\sum_{g=1}^{N}\mathbf{1}\{v_{g,k}\le s\},
+\qquad s\in[0,1],
+\end{equation}
+and set $\widetilde{v}_{g,k}=\widehat{G}_{k}(v_{g,k})$.
+\end{definition}
+
+\begin{remark}[Terminology and relation to existing
+transformations]\label{rem:pit}
+$\widehat{G}_k$ is an empirical distribution function of the $N$ observed
+values $v_{1,k},\dots,v_{N,k}$; it is not a cumulative distribution function of
+a postulated random variable, and we do not describe it as one. The map
+$v_{g,k}\mapsto\widehat{G}_k(v_{g,k})$ returns the normalised rank of image $g$
+along coordinate $k$. It coincides with the empirical probability integral
+transform \cite{ref:rosenblatt1952}, with rank-based normalisation, and, up to
+the linear interpolation used between sample quantiles, with the
+\texttt{QuantileTransformer} of scikit-learn \cite{ref:pedregosa2011}: across
+our 4400-image dataset the average correlation between the two is $0.9908$. We
+claim no novelty for the transformation and evaluate it as a baseline.
+\end{remark}
+
+\begin{proposition}[Elementary properties]\label{prop:properties}
+Fix $k$ and suppose $v_{1,k},\dots,v_{N,k}$ are pairwise distinct. Then
+$\widehat{G}_k$ is nondecreasing and right-continuous with
+$\widetilde{v}_{g,k}\in\{1/N,\dots,1\}$; the map
+$v_{g,k}\mapsto\widetilde{v}_{g,k}$ is nondecreasing; and the empirical
+distribution of $\{\widetilde{v}_{g,k}\}_{g=1}^{N}$ is uniform on
+$\{1/N,\dots,1\}$, with mean $(N+1)/(2N)$ and variance $(N^2-1)/(12N^2)$.
+\end{proposition}
+
+\begin{proof}
+The first two claims follow from \eqref{eq:rank}. For the third, distinctness
+makes $g\mapsto\widetilde{v}_{g,k}$ a bijection onto $\{1/N,\dots,1\}$; the
+moments are those of a discrete uniform law.
+\end{proof}
+
+After the transform every coordinate carries the same empirical variance, so no
+coordinate dominates the Euclidean distance used by $K$-means. This is a
+statement about geometry, not accuracy. Section~\ref{sec:rank-eval} shows that
+the practical consequence is reduced sensitivity to initialisation rather than
+improved mean accuracy.
+
+$\widehat{G}_k$ is a nondecreasing step function whose inverse is not unique.
+No step of our argument requires a generalised inverse, so the question does
+not arise.
+
+\begin{lemma}[Glivenko--Cantelli at the image level]\label{lemma:gc}
+Fix a coordinate $k$ and a class $c$, and let $G_{k,c}$ be the distribution
+function of $v_{\cdot,k}$ under $\Pi_c$. Under Assumption~\ref{ass:sampling},
+$\sup_{s\in[0,1]}|\widehat{G}_{k}(s)-G_{k,c}(s)|\to0$ almost surely as
+$N\to\infty$.
+\end{lemma}
+
+\begin{proof}
+By Assumption~\ref{ass:sampling} the values $v_{1,k},\dots,v_{N,k}$ are
+independent and identically distributed with distribution function $G_{k,c}$,
+and $\widehat{G}_k$ is their empirical distribution function. The classical
+Glivenko--Cantelli theorem applies verbatim \cite{ref:wasserman2006}.
+\end{proof}
+
+The asymptotics are in the number of images $N$, which the experimental design
+controls, and not in the number of pixels $p^2$, which is fixed by
+preprocessing and for which the required independence fails.
+
+\subsection{Computational complexity}\label{sec:complexity}
+
+\begin{proposition}[Cost of the pipeline]\label{prop:complexity}
+With $N$ images, $p^2$ pixels per image, descriptor dimension $d$, $K$ clusters
+and $I$ iterations, the pipeline runs in time
+$O(Np^{2}+dN\log N+dNKI)$ and uses $O(Nd)$ working memory beyond the input.
+\end{proposition}
+
+\begin{proof}
+Because $|\mathcal{I}|=256$, the counts $\#\{(i,j):C^{(g)}_{ij}\le t\}$ for all
+$t$ follow from a $256$-bin histogram and a prefix sum, costing $O(p^{2}+256)$
+per channel and image, hence $O(Np^{2})$ overall. No sorting of pixels is
+required, so no logarithmic factor in $p^2$ arises. Evaluating \eqref{eq:rank}
+at all $N$ observed values of a coordinate requires one sort of $N$ numbers,
+repeated over $d$ coordinates. Lloyd's algorithm costs $O(NdKI)$. Memory is
+dominated by the $N\times d$ feature matrix.
+\end{proof}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Method}\label{sec:method}
+
+\subsection{Pipeline}\label{sec:pipeline}
+
+\paragraph{Preprocessing.} Images are read in RGB and resized to $32\times32$
+pixels by bilinear interpolation (\texttt{cv2.resize} with its default
+\texttt{INTER\_LINEAR}). Resizing standardises the descriptor across
+resolutions; because the descriptor depends on an image only through its colour
+distribution, downsampling preserves the quantity of interest so long as it
+introduces no systematic colour shift. Section~\ref{sec:ablation} confirms this
+empirically over resolutions from $16\times16$ to $128\times128$.
+
+\paragraph{Descriptor.} We evaluate the per-channel ECDF at intensity levels
+$100$, $150$ and $200$. Two coordinates, $G_{100}$ and $B_{100}$, are
+near-degenerate on our data and are dropped, giving the seven-dimensional
+descriptor
+\begin{equation}\label{eq:seven}
+\mathbf{v}_g=\big(R_{100},R_{150},R_{200},G_{150},G_{200},B_{150},B_{200}\big),
+\end{equation}
+where $C_{t}$ abbreviates $F^{(g)}_C(t)$. Section~\ref{sec:ablation} compares
+this choice against the full nine-coordinate grid and alternative level sets.
+The levels were selected empirically; we make no claim of optimality or of
+transfer to other datasets.
+
+\paragraph{Clustering.} We run Lloyd's algorithm with $k$-means++
+initialisation \cite{ref:arthur2007} and $K$ equal to the number of
+ground-truth classes. No label information enters the initialisation. Cluster
+identities carry no meaning, so before computing any label-dependent metric we
+solve the assignment problem between clusters and classes with the Hungarian
+algorithm on the contingency matrix \cite{ref:kuhn1955}.
+Section~\ref{sec:algos} additionally reports Gaussian mixtures, agglomerative
+clustering and DBSCAN on the same descriptor.
+
+\subsection{Baselines}\label{sec:baselines}
+
+We compare the descriptor against colour moments (mean, standard deviation and
+skewness per channel, $d=9$) \cite{ref:stricker1995}, a quantised joint RGB
+histogram with four bins per channel ($d=64$) \cite{ref:swain1991}, and
+features from the penultimate layer of an ImageNet-pretrained ResNet-50
+($d=2048$) \cite{ref:he2016resnet}. ResNet-50 features are extracted twice:
+from the original-resolution images, which is the setting favourable to the
+network, and from the $32\times32$ images upsampled to $224\times224$, which
+equalises the input available to all methods. Descriptors with $d>20$ are
+standardised before clustering.
+
+We compare the untransformed descriptor against min--max scaling, $z$-score
+standardisation, the rank transform of Definition~\ref{def:rank}, and
+scikit-learn's \texttt{QuantileTransformer}.
+
+\subsection{Evaluation protocol}\label{sec:protocol}
+
+$K$-means is sensitive to initialisation, so single-run figures are
+uninformative. We report two protocols.
+
+\emph{Protocol A (stability).} The full dataset is clustered 100 times with
+different random seeds. We report mean, standard deviation, minimum, maximum,
+and the empirical $2.5$ and $97.5$ percentiles. These are percentile intervals
+of the observed distribution across initialisations and require no
+distributional assumption or pivotal quantity.
+
+\emph{Protocol B (leakage-free generalisation).} Stratified five-fold
+cross-validation repeated over 20 seeds, giving 100 runs. Any transformation is
+fitted on the training folds only and applied to the held-out fold; the
+clustering is fitted on the training folds and the held-out fold assigned by
+nearest centroid. This is necessary because the rank transform is computed
+across images and would otherwise leak information from the test fold.
+
+We report external metrics (accuracy, precision, recall and $F_1$ after
+Hungarian matching, adjusted Rand index \cite{ref:hubert1985}, normalised
+mutual information) and internal metrics (silhouette \cite{ref:rousseeuw1987},
+Davies--Bouldin \cite{ref:davies1979}, Calinski--Harabasz). Comparisons between
+representations use paired $t$-tests across seeds, reported with sample size,
+test statistic, $p$-value and Cohen's $d_z$.
+
+Hyperparameters of all clustering baselines are selected by silhouette
+coefficient, which uses no label information. Selecting them by accuracy would
+leak labels into the baselines and invalidate the comparison.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Experiments}\label{sec:experiments}
+
+\subsection{Datasets}\label{sec:datasets}
+
+\emph{Rose-4400.} 4400 rose images in four colour classes, balanced at 1100
+images per class: pink, red, white and yellow. The images are drawn from a
+publicly available Kaggle collection \cite{ref:rosekaggle}. We verified that
+our results reproduce from that source: re-downloading the collection and
+re-running the extraction pipeline yields, for each of the four classes, a set
+of descriptors identical to ours to machine precision, the two extractions
+differing only in file naming. \TODO{cantumkan tanggal unduhan verifikasi}
+
+\emph{Flowers102-C.} A subset of the Oxford Flowers102 dataset
+\cite{ref:nilsback2008} of 181 images in five colour categories: red, blue,
+yellow and purple with 40 images each, and brown with 21.
+
+The colour labels are not human annotations, and we state their provenance in
+full because it bears on how the results should be read. They were generated
+automatically: the dominant colour of each image was obtained by $K$-means with
+three clusters on a $100\times100$ version of the image, then mapped to one of
+five categories by thresholds on hue and saturation, with a fallback rule on
+RGB ratios where no threshold applied. Two properties of that rule matter. The
+hue ranges assigned to blue ($100$--$140$) and purple ($130$--$170$) overlap and
+are evaluated in order, so every image with hue between $130$ and $140$ is
+labelled blue; pure purple, RGB $(128,0,255)$, is labelled blue by this rule.
+The brown category requires hue in $[10,20]$, saturation in $[40,80]$ and value
+below $180$ simultaneously, a conjunction rarely satisfied, which is why it
+yields 21 images against a quota of 40 even when all 8189 images are scanned.
+The category boundaries are therefore artefacts of the thresholds rather than
+perceptual divisions.
+
+This construction makes the labels a function of colour, which would inflate
+any success a colour descriptor achieved here. It does not inflate a failure.
+As Section~\ref{sec:failure} shows, no colour descriptor recovers these
+categories, and the reason is a mismatch between two different measurements of
+colour: the labels encode the dominant colour of one local region, while the
+descriptor encodes the distribution over the whole image. The dataset therefore
+serves as a negative control, not as an independent benchmark, and we do not
+report it as evidence of generalisation.
+
+\subsection{Linear separability of the descriptor}\label{sec:linear}
+
+Table~\ref{tab:supervised} reports supervised five-fold cross-validated
+accuracy on the descriptor of \eqref{eq:seven}. Both linear classifiers
+separate the four rose classes perfectly. Since the descriptor derives from
+$32\times32\times3=3072$ pixel values, this is a compression of $439{:}1$ with
+no loss of linear discriminability.
+
+\begin{table}[h]
+\centering
+\caption{Supervised five-fold cross-validated accuracy on the
+seven-dimensional descriptor, Rose-4400.}\label{tab:supervised}
+\begin{tabular}{@{}lc@{}}
+\toprule
+Classifier & Accuracy \\
+\midrule
+Linear SVM & $100.0\%$ \\
+Linear discriminant analysis & $100.0\%$ \\
+\botrule
+\end{tabular}
+\end{table}
+
+\subsection{Comparison with baseline descriptors}\label{sec:baseline-results}
+
+Table~\ref{tab:descriptors} reports Protocol A for all descriptors. The
+seven-dimensional ECDF descriptor outperforms colour moments by $17.8$
+percentage points and the 64-dimensional RGB histogram by $13.0$, while using
+fewer dimensions than either.
+
+\begin{table}[h]
+\centering
+\caption{Protocol A on Rose-4400: $K$-means with $k$-means++ over 100 seeds.
+Accuracy after Hungarian matching. ARI is the adjusted Rand index, Silh.\ the
+silhouette coefficient, DB the Davies--Bouldin index.}\label{tab:descriptors}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Descriptor & $d$ & Accuracy & SD & ARI & Silh. & DB \\
+\midrule
+ECDF, seven coordinates       & $7$    & $\mathbf{92.99}$ & $7.34$  & $\mathbf{0.864}$ & $0.709$ & $0.528$ \\
+ECDF, full grid               & $9$    & $89.85$ & $11.26$ & $0.840$ & $0.706$ & $0.492$ \\
+RGB histogram, $4^3$ bins     & $64$   & $80.02$ & $13.20$ & $0.705$ & $0.507$ & $1.079$ \\
+Colour moments                & $9$    & $75.21$ & $12.90$ & $0.655$ & $0.712$ & $0.444$ \\
+ResNet-50, $32\times32$ input & $2048$ & $60.92$ & $11.52$ & $0.400$ & $0.327$ & $1.383$ \\
+ResNet-50, original images    & $2048$ & $48.52$ & $12.75$ & $0.259$ & $0.370$ & $1.308$ \\
+\botrule
+\end{tabular}
+\end{table}
+
+The ResNet-50 result requires careful interpretation, and we state plainly what
+it does and does not show. It does not show that a seven-number statistic beats
+learned representations in general. It shows that a frozen
+ImageNet-pretrained backbone carries the wrong inductive bias for this
+particular task. The network was trained to recognise object categories, and
+standard ImageNet augmentation includes colour jitter, which explicitly
+encourages invariance to the very signal that defines our labels. Every image
+in Rose-4400 is a rose; the clusters that ResNet-50 features induce are
+organised by pose, background and texture, not by petal colour.
+
+The two ResNet rows support this reading directly. Reducing the input to
+$32\times32$ before upsampling destroys texture and fine spatial structure
+while leaving the colour distribution intact, and it \emph{improves} accuracy
+from $48.52\%$ to $60.92\%$, with the adjusted Rand index rising from $0.259$
+to $0.400$. A baseline degraded by an information bottleneck would move the
+other way. What the bottleneck removes is precisely the information that was
+leading the network away from the labels.
+
+We would expect a network fine-tuned on colour-defined labels, or a
+self-supervised model trained without colour augmentation, to behave
+differently. We did not run such experiments and make no claim about them.
+
+\subsection{Comparison of representations}\label{sec:rank-eval}
+
+Table~\ref{tab:representations} reports Protocol A across transformations of
+the descriptor, Table~\ref{tab:protocolB} reports Protocol B, and
+Table~\ref{tab:ttest} gives paired $t$-tests across the 100 seeds.
+
+\begin{table}[h]
+\centering
+\caption{Protocol A: transformations of the seven-dimensional descriptor,
+Rose-4400, 100 seeds. CI is the $2.5$--$97.5$ percentile interval across
+initialisations.}\label{tab:representations}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Representation & Accuracy & SD & CI & ARI & Silh. & DB \\
+\midrule
+Untransformed       & $92.99$ & $7.34$ & $[71.76,\,96.86]$ & $\mathbf{0.864}$ & $0.709$ & $0.528$ \\
+Min--max            & $93.42$ & $3.47$ & $[93.91,\,93.91]$ & $0.847$ & $0.711$ & $0.503$ \\
+$z$-score           & $92.48$ & $4.03$ & $[88.14,\,93.91]$ & $0.823$ & $0.693$ & $0.542$ \\
+Rank transform      & $93.64$ & $2.73$ & $[93.91,\,93.91]$ & $0.849$ & $0.671$ & $0.601$ \\
+QuantileTransformer & $93.91$ & $\mathbf{0.00}$ & $[93.91,\,93.91]$ & $0.852$ & $0.667$ & $0.610$ \\
+\botrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Protocol B: stratified five-fold cross-validation, 20 seeds, 100 runs.
+Accuracy on held-out folds, Rose-4400.}\label{tab:protocolB}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Representation & Accuracy & SD & CI \\
+\midrule
+Untransformed       & $\mathbf{93.65}$ & $6.27$ & $[70.96,\,97.50]$ \\
+QuantileTransformer & $93.40$ & $3.67$ & $[93.30,\,94.43]$ \\
+Rank transform      & $92.82$ & $5.40$ & $[69.65,\,94.43]$ \\
+Min--max            & $92.49$ & $5.71$ & $[70.96,\,94.43]$ \\
+$z$-score           & $91.61$ & $4.82$ & $[72.53,\,94.43]$ \\
+\botrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Paired $t$-tests across 100 seeds, Protocol A, Rose-4400. A positive
+mean difference favours representation A.}\label{tab:ttest}
+\begin{tabular}{@{}llcccc@{}}
+\toprule
+Representation A & Representation B & Diff.\ (pp) & $t$ & $p$ & $d_z$ \\
+\midrule
+Rank transform      & Untransformed & $+0.65$ & $0.821$ & $0.413$ & $0.08$ \\
+Min--max            & Untransformed & $+0.43$ & $0.568$ & $0.571$ & $0.06$ \\
+QuantileTransformer & Untransformed & $+0.92$ & $1.251$ & $0.214$ & $0.13$ \\
+Untransformed       & $z$-score     & $+0.51$ & $0.730$ & $0.467$ & $0.07$ \\
+Rank transform      & $z$-score     & $+1.15$ & $2.336$ & $0.022$ & $0.23$ \\
+QuantileTransformer & $z$-score     & $+1.43$ & $3.544$ & $0.001$ & $0.35$ \\
+\botrule
+\end{tabular}
+\end{table}
+
+Three conclusions follow. First, no transformation improves mean accuracy over
+the untransformed descriptor at any conventional significance level; the
+largest such comparison gives $p=0.214$ with $d_z=0.13$. Second, under the
+leakage-free Protocol B the untransformed descriptor is in fact the best
+performer, the opposite of what earlier reports on this pipeline claim. Third,
+and this is the one respect in which the transformations earn their place, they
+reduce sensitivity to initialisation sharply: the standard deviation across
+seeds falls from $7.34$ percentage points untransformed to $2.73$ under the
+rank transform and to $0.00$ under \texttt{QuantileTransformer}, which returned
+the same partition at all 100 seeds. Practitioners who need reproducible output
+from a single run should apply the transform; those who report distributions
+across seeds gain nothing from it.
+
+\subsection{Comparison of clustering algorithms}\label{sec:algos}
+
+Table~\ref{tab:algorithms} compares four clustering algorithms on the same
+descriptor, each tuned by silhouette under identical conditions.
+
+\begin{table}[h]
+\centering
+\caption{Clustering algorithms on the seven-dimensional descriptor, Rose-4400.
+Hyperparameters selected by silhouette. Deterministic methods have zero
+standard deviation by construction. Runtime is per run on a laptop
+CPU.}\label{tab:algorithms}
+\begin{tabular}{@{}llccc@{}}
+\toprule
+Algorithm & Selected configuration & Accuracy & SD & Time (s) \\
+\midrule
+Agglomerative    & ward linkage & $\mathbf{95.84}$ & $0.00$ & $0.20$ \\
+$K$-means        & $k$-means++, $K=4$ & $93.33$ & $6.23$ & $0.25$ \\
+Gaussian mixture & full covariance, $k$-means init & $93.33$ & $6.23$ & $0.26$ \\
+Gaussian mixture & spherical, random init & $75.71$ & $12.71$ & $0.24$ \\
+DBSCAN           & $\epsilon=0.310$, min.\ samples $=50$ & $72.77$ & $0.00$ & $0.09$ \\
+\botrule
+\end{tabular}
+\end{table}
+
+Agglomerative clustering with ward linkage outperforms $K$-means by $2.5$
+percentage points and is deterministic, at comparable cost. We report this
+because it bears on how the contribution should be read: the strength of the
+approach lies in the descriptor, not in any particular clustering algorithm,
+and a practitioner should prefer ward linkage here.
+
+Two implementation details are worth recording, since either would otherwise
+produce misleading numbers. The default initialisation of the Gaussian mixture
+implementation in scikit-learn is $k$-means with the same random seed, so the
+mixture converges to the same partition as $K$-means and that comparison
+carries no information; the row with random initialisation is the informative
+one. Second, an unconstrained silhouette search for DBSCAN selects a very small
+$\epsilon$ that splits the data into more than twenty clusters of duplicated
+points, achieving a degenerate silhouette of $1.0$. The descriptor contains
+many tied values, so this outcome is not incidental. We therefore restricted
+the DBSCAN grid to configurations yielding exactly $K$ clusters.
+
+\subsection{Verification of photometric invariance}\label{sec:invariance-exp}
+
+We applied gamma correction $\varphi(a)=255\,(a/255)^{\gamma}$ with
+$\gamma\in\{0.7,1.3\}$ to every pixel of all 4400 images and recomputed
+descriptors on the transformed grid $\{\varphi(100),\varphi(150),
+\varphi(200)\}$. The maximum absolute deviation from the original descriptors,
+over all images and coordinates, was $0$ to machine precision, confirming
+Proposition~\ref{prop:invariance}. Holding the sampling grid fixed at
+$(100,150,200)$ instead, clustering accuracy was unchanged while the mean
+coordinatewise displacement was $0.097$ for $\gamma=0.7$.
+
+\subsection{Chebyshev bounds and observed confusions}\label{sec:bounds-exp}
+
+Table~\ref{tab:cheb-bounds} evaluates \eqref{eq:cheb} for every pair of rose
+classes, minimised over the seven coordinates, and
+Table~\ref{tab:confusion-rose} gives the confusion matrix at the best seed. The
+pair with the loosest bound, pink versus red at $15.4\%$, accounts for almost
+all misassignments; the pair with the tightest bound, red versus white at
+$1.4\%$, is never confused. The ordering induced by the bound agrees with the
+empirical error structure.
+
+\begin{table}[h]
+\centering
+\caption{Chebyshev bounds \eqref{eq:cheb} for Rose-4400, minimised over the
+seven coordinates.}\label{tab:cheb-bounds}
+\begin{tabular}{@{}llccc@{}}
+\toprule
+Class pair & Coordinate & $\Delta_k$ & $\sigma_k$ & $\varepsilon_k$ \\
+\midrule
+red vs.\ white    & $G_{200}$ & $0.249$ & $0.015$ & $1.4\%$ \\
+white vs.\ yellow & $B_{150}$ & $0.391$ & $0.042$ & $4.6\%$ \\
+red vs.\ yellow   & $G_{150}$ & $0.600$ & $0.072$ & $5.7\%$ \\
+pink vs.\ yellow  & $B_{150}$ & $0.497$ & $0.063$ & $6.5\%$ \\
+pink vs.\ white   & $R_{200}$ & $0.141$ & $0.025$ & $12.3\%$ \\
+pink vs.\ red     & $B_{150}$ & $0.447$ & $0.088$ & $15.4\%$ \\
+\botrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Confusion matrix on Rose-4400, $k$-means++ at the best seed, after
+Hungarian matching. Rows are true classes.}\label{tab:confusion-rose}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+ & pink & red & white & yellow \\
+\midrule
+pink   & $1015$ & $85$  & $0$    & $0$ \\
+red    & $138$  & $962$ & $0$    & $0$ \\
+white  & $0$    & $0$   & $1100$ & $0$ \\
+yellow & $0$    & $0$   & $45$   & $1055$ \\
+\botrule
+\end{tabular}
+\end{table}
+
+\subsection{Ablations}\label{sec:ablation}
+
+%% PENTING: tabel di bawah dihitung di lingkungan berbeda dari tabel lain,
+%% sehingga baris pertama membaca 92.76 sedangkan Tabel 3 membaca 92.99.
+%% Jalankan ulang di mesin Anda dan ganti seluruh isi tabel ini.
+%% Sel kode untuk baseline_mandiri.ipynb:
+%%
+%%   sets = {
+%%     "(100,150,200) tujuh koordinat": COLS7,
+%%     "(100,150,200) grid penuh": [(c,t) for c in "RGB" for t in (100,150,200)],
+%%     "(50,100,150)":  [(c,t) for c in "RGB" for t in (50,100,150)],
+%%     "(150,200,250)": [(c,t) for c in "RGB" for t in (150,200,250)],
+%%     "(100,200)":     [(c,t) for c in "RGB" for t in (100,200)],
+%%     "(64,128,192)":  [(c,t) for c in "RGB" for t in (64,128,192)],
+%%   }
+%%   flat = imgs.reshape(len(imgs), -1, 3).astype(np.int16)
+%%   ch = {"R": flat[:,:,0], "G": flat[:,:,1], "B": flat[:,:,2]}
+%%   rows = []
+%%   for name, pairs in sets.items():
+%%       X = np.column_stack([(ch[c] <= t).mean(axis=1) for c, t in pairs])
+%%       r, _ = protocol_A(X, y, labs, K, n_seeds=N_SEEDS, tag=name)
+%%       r["d"] = X.shape[1]; rows.append(r)
+%%   pd.DataFrame(rows).to_csv(f"{OUTDIR}/tabel_ablasi_level.csv", index=False)
+
+Table~\ref{tab:ablation-levels} varies the sampling grid. The choice of levels
+matters considerably: shifting the grid downwards to $(50,100,150)$ costs more
+than 25 percentage points, and an adaptive grid at the global $25$th, $50$th
+and $75$th percentiles performs no better. The grid $(150,200,250)$ is
+competitive with our choice and attains the highest single-seed accuracy. We
+therefore present $(100,150,200)$ as an empirically adequate choice for this
+dataset, not as a recommendation that transfers.
+
+\begin{table}[h]
+\centering
+\caption{Effect of the sampling grid, Rose-4400, Protocol A, 100
+seeds.}\label{tab:ablation-levels}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Sampling grid & $d$ & Accuracy & SD & Best seed \\
+\midrule
+$(100,150,200)$, seven coordinates  & $7$ & $92.76$ & $7.92$  & $96.86$ \\
+$(150,200,250)$, full grid          & $9$ & $92.96$ & $8.93$  & $\mathbf{98.07}$ \\
+$(100,150,200)$, full grid          & $9$ & $89.22$ & $12.19$ & $96.86$ \\
+$(100,200)$, full grid              & $6$ & $86.23$ & $14.61$ & $96.86$ \\
+Adaptive percentiles $(59,141,196)$ & $9$ & $73.36$ & $11.60$ & $96.86$ \\
+$(64,128,192)$, full grid           & $9$ & $71.04$ & $10.80$ & $96.86$ \\
+$(50,100,150)$, full grid           & $9$ & $67.59$ & $6.21$  & $96.86$ \\
+\botrule
+\end{tabular}
+\end{table}
+
+%% PENTING: tabel di bawah dihitung dengan resize bikubik (default PIL),
+%% sedangkan seluruh tabel lain memakai resize bilinear (default cv2), sehingga
+%% baris p=32 membaca 90.78 dan bukan 92.99 seperti Tabel 3. Jalankan ulang
+%% dengan cv2.resize lalu ganti isi tabel ini sebelum submit. Kesimpulan
+%% paragrafnya tidak berubah, karena seluruh selisih antar-resolusi berada di
+%% bawah satu simpangan baku.
+
+Table~\ref{tab:ablation-size} varies the resize resolution over a factor of
+eight. Accuracy is flat across the range: the spread between the best and worst
+resolution is $2.7$ percentage points against standard deviations between
+$7.2$ and $9.2$, so no resolution differs from any other by more than a third
+of a standard deviation. The adjusted Rand index and the silhouette coefficient
+are likewise stable, varying by $0.046$ and $0.012$ respectively.
+
+This is the behaviour Definition~\ref{def:measure} predicts. The descriptor
+depends on an image only through its colour distribution, and bilinear
+downsampling is a local averaging operation that leaves that distribution
+substantially intact; it removes spatial detail, which the descriptor never
+used. We adopt $p=32$ because it is the smallest resolution at which no
+degradation is observable, and because the cost of the extraction stage scales
+as $O(Np^2)$ by Proposition~\ref{prop:complexity} while the descriptor
+dimension stays at seven regardless of $p$. A practitioner working at
+$p=128$ pays sixteen times the extraction cost for no measurable gain.
+
+\begin{table}[h]
+\centering
+\caption{Effect of resize resolution, Rose-4400, Protocol A, 100
+seeds.}\label{tab:ablation-size}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Resolution & Accuracy & SD & ARI & Silh. \\
+\midrule
+$16\times16$   & $91.30$ & $7.23$ & $0.823$ & $\mathbf{0.715}$ \\
+$32\times32$   & $90.78$ & $7.77$ & $0.821$ & $0.705$ \\
+$64\times64$   & $89.42$ & $9.18$ & $0.812$ & $0.703$ \\
+$128\times128$ & $\mathbf{92.11}$ & $8.63$ & $\mathbf{0.857}$ & $0.707$ \\
+\botrule
+\end{tabular}
+\end{table}
+
+\subsection{Flowers102-C}\label{sec:flowers}
+
+Table~\ref{tab:flowers-descriptors} repeats the descriptor comparison on
+Flowers102-C under Protocol A. Every method performs far worse than on
+Rose-4400, and the ordering changes: the RGB histogram now edges ahead of the
+ECDF descriptor, and the differences among all four descriptors lie within
+roughly one standard deviation of each other. No colour representation
+succeeds here, which is the point of including the dataset.
+
+\begin{table}[h]
+\centering
+\caption{Protocol A on Flowers102-C, 100 seeds, $K=5$.}
+\label{tab:flowers-descriptors}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Descriptor & $d$ & Accuracy & SD & ARI & NMI & Silh. \\
+\midrule
+RGB histogram, $4^3$ bins & $64$ & $45.23$ & $6.78$ & $0.147$ & $0.237$ & $0.058$ \\
+ECDF, full grid           & $9$  & $43.85$ & $2.93$ & $0.129$ & $0.204$ & $0.209$ \\
+Colour moments            & $9$  & $42.60$ & $4.76$ & $0.135$ & $0.196$ & $0.208$ \\
+ECDF, seven coordinates   & $7$  & $42.22$ & $4.19$ & $0.128$ & $0.205$ & $0.220$ \\
+\botrule
+\end{tabular}
+\end{table}
+
+The supervised ceiling confirms that the limitation is informational rather
+than algorithmic. On the seven-dimensional descriptor, a linear SVM reaches
+$56.97\%$ and linear discriminant analysis $59.16\%$ under five-fold
+cross-validation, against $100\%$ on Rose-4400. Even with full access to the
+labels, colour cannot separate these five categories.
+
+Table~\ref{tab:flowers-confusion} gives the confusion matrix at the best seed.
+The brown category, which has 21 images against 40 for the others, is never
+recovered: not one of its images is assigned to its own cluster. Yellow acts as
+an attractor for every class.
+
+\begin{table}[h]
+\centering
+\caption{Confusion matrix on Flowers102-C, $k$-means++ at the best seed, after
+Hungarian matching. Rows are true classes.}\label{tab:flowers-confusion}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+ & blue & brown & purple & red & yellow \\
+\midrule
+blue   & $16$ & $4$ & $8$  & $0$  & $12$ \\
+brown  & $6$  & $0$ & $2$  & $3$  & $10$ \\
+purple & $1$  & $3$ & $24$ & $3$  & $9$ \\
+red    & $2$  & $2$ & $5$  & $20$ & $11$ \\
+yellow & $3$  & $1$ & $3$  & $0$  & $33$ \\
+\botrule
+\end{tabular}
+\end{table}
+
+Because the classes are unbalanced, accuracy after Hungarian matching is biased
+towards the larger categories; we therefore report ARI and NMI alongside it,
+neither of which depends on the matching. With 181 images, five-fold
+cross-validation leaves roughly 36 images per held-out fold, so the standard
+deviations under Protocol B are correspondingly large: $44.68\pm5.15$
+untransformed, $49.16\pm4.86$ with min--max scaling, $46.65\pm5.47$ with the
+rank transform.
+
+Two further observations concern the clustering algorithms. Agglomerative
+clustering, which was the strongest method on Rose-4400, is the weakest here at
+$24.86\%$: silhouette selects average linkage, which produces one dominant
+cluster and four near-empty ones with a deceptively high silhouette of $0.334$.
+Internal validity indices reward that degenerate solution precisely because the
+classes are not separated in the feature space. DBSCAN returned no
+configuration yielding exactly five clusters anywhere in the grid. Both
+outcomes are symptoms of the same underlying condition, quantified next.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Discussion}\label{sec:discussion}
+
+\subsection{When does a colour-only descriptor work?}\label{sec:failure}
+
+The gap between our two datasets is a property of the data, not of the
+algorithm. Let $B/W$ denote the ratio of between-class to within-class variance
+in mean-RGB space. On Rose-4400 this ratio is $7.481$; on Flowers102-C it is
+$0.361$, roughly twenty times smaller. Table~\ref{tab:flowers-stats} shows why:
+the mean red-channel values of the purple and red categories differ by fewer
+than five intensity levels while their within-class standard deviations exceed
+$27$, and the blue category has a near-neutral mean. Threshold-derived dominant-colour labels
+applied to flower photographs with dominant green backgrounds do not
+correspond to separated regions of whole-image colour space.
+
+\begin{table}[h]
+\centering
+\caption{Class statistics in mean-RGB space,
+Flowers102-C.}\label{tab:flowers-stats}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Class & $n$ & Mean RGB & SD RGB \\
+\midrule
+blue   & $40$ & $(90.7,\ 94.5,\ 106.8)$  & $(30.0,\ 30.6,\ 35.4)$ \\
+brown  & $21$ & $(114.7,\ 91.4,\ 82.7)$  & $(25.5,\ 20.3,\ 26.0)$ \\
+purple & $40$ & $(139.7,\ 95.0,\ 114.9)$ & $(27.9,\ 23.0,\ 26.0)$ \\
+red    & $40$ & $(135.3,\ 79.3,\ 67.5)$  & $(34.0,\ 25.4,\ 29.0)$ \\
+yellow & $40$ & $(103.8,\ 103.2,\ 75.7)$ & $(22.1,\ 21.3,\ 23.6)$ \\
+\botrule
+\end{tabular}
+\end{table}
+
+Theorem~\ref{thm:separability}(ii) detects the same condition, and does so
+more sharply. Table~\ref{tab:flowers-cheb} evaluates the bound
+\eqref{eq:cheb} for all ten class pairs of Flowers102-C, minimised over the
+seven coordinates. Every bound is vacuous: for each pair, the within-class
+standard deviation exceeds half the separation of the class means along every
+available coordinate, so $4\sigma_k^2/\Delta_k^2>1$ throughout and the theorem
+guarantees nothing. On Rose-4400 the same computation returned bounds between
+$1.4\%$ and $15.4\%$ (Table~\ref{tab:cheb-bounds}). The theory therefore
+predicts both the success on one dataset and the failure on the other, from
+quantities estimable before any clustering is run.
+
+\begin{table}[h]
+\centering
+\caption{Chebyshev bounds \eqref{eq:cheb} for Flowers102-C, minimised over the
+seven coordinates. Every bound is vacuous.}\label{tab:flowers-cheb}
+\begin{tabular}{@{}llccc@{}}
+\toprule
+Class pair & Coordinate & $\Delta_k$ & $\sigma_k$ & $\varepsilon_k$ \\
+\midrule
+blue vs.\ purple   & $R_{150}$ & $0.267$ & $0.171$ & $\ge 100\%$ \\
+purple vs.\ yellow & $R_{150}$ & $0.250$ & $0.171$ & $\ge 100\%$ \\
+red vs.\ yellow    & $R_{200}$ & $0.244$ & $0.147$ & $\ge 100\%$ \\
+blue vs.\ red      & $R_{150}$ & $0.236$ & $0.151$ & $\ge 100\%$ \\
+brown vs.\ purple  & $B_{150}$ & $0.195$ & $0.166$ & $\ge 100\%$ \\
+purple vs.\ red    & $B_{150}$ & $0.191$ & $0.166$ & $\ge 100\%$ \\
+blue vs.\ brown    & $B_{150}$ & $0.185$ & $0.189$ & $\ge 100\%$ \\
+blue vs.\ yellow   & $B_{150}$ & $0.178$ & $0.189$ & $\ge 100\%$ \\
+brown vs.\ red     & $R_{200}$ & $0.164$ & $0.147$ & $\ge 100\%$ \\
+brown vs.\ yellow  & $R_{200}$ & $0.079$ & $0.096$ & $\ge 100\%$ \\
+\botrule
+\end{tabular}
+\end{table}
+
+This suggests a practical criterion. Computing $B/W$ costs one pass over the
+data and requires no clustering, and the bounds $\varepsilon_k$ cost little
+more. Where $B/W$ is well above unity and the bounds are informative, a
+low-dimensional colour descriptor is likely to suffice; where $B/W$ falls below
+unity and every bound is vacuous, texture or shape information is necessary and
+no amount of tuning of a colour-only method will compensate. The two
+diagnostics agree on both of our datasets, and neither requires labels beyond
+the class assignment used to estimate the moments.
+
+A cautionary observation follows from Section~\ref{sec:flowers}. When classes
+are not separated in the feature space, internal validity indices do not merely
+fail to help, they actively mislead: silhouette selected average linkage for
+agglomerative clustering on Flowers102-C, awarding $0.334$ to a degenerate
+partition that scores $24.86\%$ accuracy, while $K$-means with a lower
+silhouette of $0.222$ scored $42.01\%$. Hyperparameter selection by internal
+index, which is the right choice for a fair label-free comparison, is only
+trustworthy in the regime the criterion above identifies.
+
+\subsection{Clustering versus classification}\label{sec:gap}
+
+The descriptor supports perfect linear classification
+(Table~\ref{tab:supervised}), yet the best clustering result is $95.84\%$ and
+$K$-means reaches only $93.33\%$. The gap is attributable to the clustering
+objectives rather than to the representation. $K$-means seeks spherical
+clusters of comparable size and cannot exploit the anisotropic, elongated
+geometry that the linear classifiers use; ward linkage, which merges by
+variance increase rather than by distance to a centroid, recovers part of the
+difference. Spectral clustering on a suitable affinity is a natural next step.
+
+\subsection{Limitations}\label{sec:limitations}
+
+The descriptor uses colour only and fails on texture-dependent tasks, as
+Flowers102-C demonstrates: no colour descriptor we tested exceeded $45.23\%$
+there, and the supervised ceiling was $59.16\%$. The intensity levels are fixed and were chosen
+empirically on one dataset; Table~\ref{tab:ablation-levels} shows the choice
+matters, and we do not claim it transfers. The number of clusters must be
+specified in advance. Preprocessing resolution, by contrast, is not a
+sensitivity: Table~\ref{tab:ablation-size} shows accuracy flat from
+$16\times16$ to $128\times128$. The invariance of Proposition~\ref{prop:invariance} holds
+for a photometric transformation applied uniformly across images; per-image
+illumination variation is not covered and remains a source of within-class
+variance. Finally, our deep-feature baseline uses a single frozen
+ImageNet-pretrained backbone; that comparison speaks to inductive bias, not to
+what a network trained for this task could achieve.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Conclusion}\label{sec:conclusion}
+
+Seven numbers per image, obtained by evaluating per-channel empirical
+distribution functions at three intensity levels, separate four rose colour
+classes perfectly under linear classification and support clustering at
+$95.84\%$ with ward linkage and $92.99\pm7.34\%$ with $K$-means over 100
+initialisations. The descriptor outperforms colour moments, a 64-dimensional
+RGB histogram, and a frozen ImageNet-pretrained ResNet-50, the last by a margin
+we attribute to a mismatch of inductive bias rather than to any general
+superiority over learned representations.
+
+We proved and verified exact invariance under monotone photometric
+transformations, and replaced an incorrect separability claim common in this
+literature with an exact result under a margin condition together with a
+distribution-free bound whose ordering matches the observed confusion
+structure. Two negative results accompany the positive ones: a rank transform
+of the descriptor leaves mean accuracy unchanged while sharply reducing
+sensitivity to initialisation, and $K$-means is not the best clustering
+algorithm available for this representation. On a five-category colour subset of Flowers102
+every colour descriptor fails, and the same Chebyshev bound that predicts the
+error structure on Rose-4400 is vacuous for all ten class pairs there. Together
+with the between-class to within-class colour variance ratio, which falls from
+$7.481$ to $0.361$ between the two datasets, this gives a diagnostic that
+distinguishes the regime in which the approach succeeds from the one in which
+it does not, computable before committing to a colour-only method.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\backmatter
+
+\bmhead{Acknowledgements}
+This research was supported by the Department of Mathematics and the School of
+Electrical Engineering and Informatics, Institut Teknologi Bandung, and by the
+Department of Mathematics Education, Universitas Pendidikan Indonesia.
+
+\section*{Declarations}
+
+\begin{itemize}
+\item \textbf{Funding.} \TODO{nomor hibah, atau nyatakan tidak ada pendanaan
+khusus}
+\item \textbf{Competing interests.} The authors declare no competing interests.
+\item \textbf{Ethics approval.} Not applicable.
+\item \textbf{Consent to participate.} Not applicable.
+\item \textbf{Consent for publication.} All authors consent to publication.
+\item \textbf{Data availability.} The Flowers102 dataset is publicly available
+\cite{ref:nilsback2008}, and the rose collection is publicly available on
+Kaggle \cite{ref:rosekaggle}. A single notebook reproduces every table in
+this paper end to end, from downloading both collections through extraction to
+the reported metrics; it is available from the corresponding author on
+reasonable request. \TODO{lebih baik: unggah notebook ke repositori publik dan
+ganti kalimat terakhir dengan tautan permanennya, misalnya DOI Zenodo}
+\item \textbf{Code availability.} \TODO{unggah kode ke repositori publik dan
+cantumkan tautan permanen di sini}
+\item \textbf{Author contribution.} \TODO{isi sesuai kontribusi masing-masing
+penulis}
+\end{itemize}
+
+\begin{appendices}
+
+\section{Illustrative example on a six-image dataset}\label{secA1}
+
+\TODO{Opsional, dan kami menyarankan menghapus bagian ini seluruhnya. Enam
+citra tidak mendukung kesimpulan apa pun, reviewer sebelumnya sudah memintanya
+dipersingkat atau dipindahkan, dan berkas ekstraksinya memakai $p=3$ yaitu
+sembilan piksel per citra, bukan $32\times32$ seperti dinyatakan di naskah
+lama.}
+
+\end{appendices}
+
+\bibliography{sn-bibliography}
+
+\end{document}

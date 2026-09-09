@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "Jika Anda memakai kode atau data ini, mohon sitasi naskah berikut."
+title: "Seven Numbers Suffice: Low-Dimensional ECDF Colour Descriptors for Image Clustering"
+authors:
+  - family-names: Husain
+    given-names: Husty Serviana
+    affiliation: "Institut Teknologi Bandung; Universitas Pendidikan Indonesia"
+  - family-names: Indratno
+    given-names: Sapto Wahyu
+    affiliation: "Institut Teknologi Bandung"
+    email: sapto@itb.ac.id
+  - family-names: Vantika
+    given-names: Sandy
+    affiliation: "Institut Teknologi Bandung"
+  - family-names: Utama
+    given-names: Nugraha Priya
+    affiliation: "Institut Teknologi Bandung"
+year: 2026
+license: MIT
